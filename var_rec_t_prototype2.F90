@@ -30,8 +30,157 @@ module combinatorics
   private
   public :: nchoosek
   public :: get_exponents
+  public :: mat_inv
 
 contains
+
+!================================== LUdecomp =================================80
+!>
+!! LU decomposition, with pivoting, for a regular NxN dense array
+!<
+!=============================================================================80
+  subroutine LUdecomp( LU, P, A, m )
+
+    use set_precision, only : dp
+    use set_constants, only : zero, one
+
+    real(dp), dimension(m,m), intent(out) :: LU,P
+    real(dp), dimension(m,m), intent(in)  :: A
+    integer,                  intent(in)  :: m
+
+    real(dp), dimension(m) :: ctemp1, LUtemp
+
+    integer  :: col, row, maxi, ipr
+    real(dp) :: factor
+
+    continue
+
+    LU = A
+
+    P = zero
+    do col = 1,m
+      P(col,col) = one
+    end do
+
+    do col = 1,m-1
+!Pivoting -----------------------
+!row pivot
+      maxi=maxloc(abs(LU(col:m,col)),1)
+      ipr=maxi+col-1
+
+      if (ipr.ne.col) then
+        ctemp1 = LU(ipr,:)
+        LU(ipr,:) = LU(col,:)
+        LU(col,:) = ctemp1
+
+        ctemp1 = P(ipr,:)
+        P(ipr,:) = P(col,:)
+        P(col,:) = ctemp1
+      end if
+
+  !column pivot
+  !maxi=maxloc(abs(LU(col,col:m)),1)
+  !ipr=maxi+col-1
+
+  !if (ipr.ne.col) then
+  !  ctemp1=LU(:,ipr)
+  !  LU(:,ipr)=LU(:,col)
+  !  LU(col,:)=ctemp1
+  !
+  !  ctemp1=P(:,ipr)
+  !  P(:,ipr)=P(:,col)
+  !  P(:,col)=ctemp1
+  !end if
+  !----------------------------------
+      !print*, LU(col,col)
+      if ( abs(LU(col,col)) > zero ) then
+        do row = col+1,m
+          factor = LU(row,col)/LU(col,col)
+    !      print*, row, col, m, factor
+    !      print*, LU(row,col+1:m)
+    !      print*, factor*LU(col,col+1:m)
+    !      print*,LU(row,col+1:m) - factor*LU(col,col+1:m)
+    !      print*,
+
+          LUtemp(col+1:m) = LU(row,col+1:m) - factor*LU(col,col+1:m)
+          LU(row,col+1:m) = LUtemp(col+1:m)
+          LU(row,col) = factor
+
+        end do
+      end if
+!      write(*,'(9f12.6)')(LU(i,:),i=1,m)
+    end do
+
+  end subroutine LUdecomp
+
+!================================== LUsolve ==================================80
+!>
+!! LU solve for a regular dense array
+!<
+!=============================================================================80
+  subroutine LUsolve( x, LU, P, bin, m )
+
+    use set_precision, only : dp
+
+    real(dp), dimension(m),   intent(out) :: x
+    real(dp), dimension(m,m), intent(in)  :: LU, P
+    real(dp), dimension(m),   intent(in)  :: bin
+    integer,                  intent(in)  :: m
+
+    integer :: i, row
+
+    real(dp), dimension(m) :: b, d
+
+    continue
+
+! Permute b matrix
+    b = matmul(P,bin)
+
+! Forward substitution
+    d(1) = b(1)
+    do row = 2,m
+      d(row) = b(row) - sum( LU(row,1:row-1)*d(1:row-1) )
+    end do
+
+! Backward substitution
+    x(m) = d(m)/LU(m,m)
+    do i = 1,m-1
+      row = m-i
+      x(row) = ( d(row) - sum( LU(row,row+1:m)*x(row+1:m) ) ) / LU(row,row)
+    end do
+
+  end subroutine LUsolve
+
+!================================== mat_inv ==================================80
+!>
+!! Calculates the inverse of a general nxn matrix using LU decomposition
+!<
+!=============================================================================80
+  subroutine mat_inv( mat, inv, n )
+
+    use set_precision, only : dp
+    use set_constants, only : zero, one
+
+    integer,                  intent(in)  :: n
+    real(dp), dimension(n,n), intent(in)  :: mat
+    real(dp), dimension(n,n), intent(out) :: inv
+
+    integer                  :: i
+    real(dp), dimension(n)   :: b
+    real(dp), dimension(n,n) :: lu, p
+
+    continue
+
+    call ludecomp( lu, p, mat, n )
+
+    inv = zero
+    do i = 1,n
+      b = zero
+      b(i) = one
+      call lusolve( inv(:,i), lu, p, b, n )
+    end do
+
+  end subroutine mat_inv
 
   pure function nchoosek( n, k ) result( c )
     integer, intent(in) :: n, k
@@ -449,7 +598,6 @@ contains
     use combinatorics, only : nchoosek, get_exponents
     integer, intent(in) :: total_degree, n_dim
     type(monomial_basis_t) :: this
-    integer :: n
 
     call this%destroy()
 
@@ -771,6 +919,7 @@ pure subroutine destroy_var_rec_t(this)
 end subroutine destroy_var_rec_t
 
 subroutine setup_reconstruction_interior_faces(this,nbors,fquads,term_start,term_end)
+  use combinatorics, only : mat_inv
   class(var_rec_t),                             intent(inout) :: this
   class(var_rec_t), dimension(this%n_interior), intent(in)    :: nbors
   class(quad_t),    dimension(this%n_interior), intent(in)    :: fquads
@@ -794,6 +943,15 @@ subroutine setup_reconstruction_interior_faces(this,nbors,fquads,term_start,term
   allocate( this%A_inv_B( term_end-term_start,term_end-term_start, this%n_interior ) )
   allocate( this%A_inv_C( term_end-term_start, term_start, this%n_interior ) )
   allocate( this%A_inv_D( term_end-term_start, term_start ) )
+
+  call mat_inv( A, this%A_inv, size(A,1) )
+
+  do j = 1,this%n_interior
+    this%A_inv_B(:,:,j) = matmul( this%A_inv, B(:,:,j) )
+    this%A_inv_C(:,:,j) = matmul( this%A_inv, C(:,:,j) )
+  end do
+
+  this%A_inv_D = matmul(this%A_inv,D)
 
   ! real(dp), dimension( term_end - term_start, term_start ), intent(out) :: D
   ! real(dp), dimension( term_end - term_start, term_start, this%n_interior), intent(out) :: C
