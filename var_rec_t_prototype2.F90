@@ -483,9 +483,10 @@ contains
     integer,                  intent(in)  :: N
     real(dp), dimension(N+1), intent(out) :: x, w
     integer :: j, k
-    real(dp) :: eps4, delta, LNp1, dLNp1
-    integer, parameter :: quad_n_iter = 10
-    eps4 = four*epsilon(one)
+    integer,  parameter :: quad_n_iter = 20
+    real(dp), parameter :: eps4 = four*epsilon(one)
+    real(dp) :: delta, LNp1, dLNp1
+    
     x = zero
     w = zero
 
@@ -904,6 +905,9 @@ function constructor( self_block, self_idx, int_idx, bnd_idx, n_vars, mono_basis
   this%bnd_idx    = bnd_idx
   this%n_vars = n_vars
   this%basis = zero_mean_basis_t(mono_basis,quad,h_ref)
+
+  allocate( this%coefs(this%basis%n_terms,this%n_vars) )
+  
 end function constructor
 
 pure subroutine destroy_var_rec_t(this)
@@ -1137,8 +1141,8 @@ program main
 
   self_block = 1
   self_idx   = 1
-  n_vars     = 1
-  degree     = 10
+  n_vars     = 4
+  degree     = 4
   n_dim      = 3
   allocate(int_idx(2)); int_idx = [2,3]
   allocate(bnd_idx(0))
