@@ -176,6 +176,12 @@ module index_conversion
   private
   public :: global2local, global2local_bnd, global2local_ghost
   public :: local2global, local2global_bnd, local2global_ghost
+  public :: in_bound, cell_face_nbors
+
+  interface cell_face_nbors
+    module procedure cell_face_nbors_lin
+    module procedure cell_face_nbors_sub
+  end interface cell_face_nbors
 contains
   
   pure function global2local(iG,nSub) result(iSub)
@@ -247,6 +253,82 @@ contains
     iG   = local2global(idx,nSub)
   end function local2global_bnd
 
+  pure function in_bound( dim, idx, bnd_min, bnd_max )
+    integer,                 intent(in) :: dim
+    integer, dimension(dim), intent(in) :: idx, bnd_min, bnd_max
+    logical                             :: in_bound
+    in_bound =     all(idx>=bnd_min).and.all(idx<=bnd_max)                       &
+              .or. all(idx<=bnd_min).and.all(idx>=bnd_max)
+  end function in_bound
+
+  pure subroutine cell_face_nbors_sub( dim, idx, bnd_min, bnd_max, nbor_cell_idx, nbor_face_id, n_int )
+    integer,                       intent(in) :: dim
+    integer, dimension(dim),       intent(in) :: idx, bnd_min, bnd_max
+    integer, dimension(dim,2*dim), intent(out) :: nbor_cell_idx
+    integer, dimension(2*dim),     intent(out) :: nbor_face_id
+    integer,                       intent(out) :: n_int
+    integer, dimension(dim,2*dim) :: nbor_cell_idx_tmp
+    integer, dimension(dim) :: idx_tmp
+    integer :: s, j, n_ext
+    n_int = 0
+    n_ext = 0
+    do j = 1,dim
+      do s = -1,1,2
+        idx_tmp = idx
+        idx_tmp(j) = idx_tmp(j) + s
+        if ( in_bound(dim,idx_tmp,bnd_min,bnd_max) ) then
+            n_int = n_int + 1
+            nbor_cell_idx(:,n_int) = idx_tmp
+        else
+          n_ext = n_ext + 1
+          nbor_cell_idx_tmp(:,n_ext) = idx_tmp
+        end if
+      end do
+    end do
+    do j = 1,n_ext
+      nbor_cell_idx(:,n_int+j) = nbor_cell_idx_tmp(:,j)
+    end do
+  end subroutine cell_face_nbors_sub
+
+  pure subroutine cell_face_nbors_lin( dim, lin_idx, bnd_min, bnd_max, &
+                                       nbor_cell_idx, nbor_face_id, n_int )
+    integer,                       intent(in) :: dim, lin_idx
+    integer, dimension(dim),       intent(in) :: bnd_min, bnd_max
+    integer, dimension(2*dim), intent(out) :: nbor_cell_idx
+    integer, dimension(2*dim), intent(out) :: nbor_face_id
+    integer,                       intent(out) :: n_int
+    integer, dimension(2*dim) :: nbor_cell_idx_tmp
+    integer, dimension(dim) :: idx, idx_tmp
+    integer :: s, j, n_ext
+    idx = global2local_bnd(lin_idx,bnd_min,bnd_max)
+    n_int = 0
+    n_ext = 0
+    do j = 1,dim
+      do s = -1,1,2
+        idx_tmp = idx
+        idx_tmp(j) = idx_tmp(j) + s
+
+        if ( in_bound(dim,idx_tmp,bnd_min,bnd_max) ) then
+            n_int = n_int + 1
+            nbor_cell_idx(n_int) = local2global_bnd(idx_tmp,bnd_min,bnd_max)
+        else
+          n_ext = n_ext + 1
+          nbor_cell_idx_tmp(n_ext) = local2global_bnd(idx_tmp,bnd_min,bnd_max)
+        end if
+      end do
+    end do
+    do j = 1,n_ext
+      nbor_cell_idx(n_int+j) = nbor_cell_idx_tmp(j)
+    end do
+  end subroutine cell_face_nbors_lin
+
+  pure elemental subroutine get_face_info_from_id(face_id,dir,offset)
+    integer, intent(in)  :: face_id
+    integer, intent(out) :: dir, offset
+    dir    = (face_id-1)/2 + 1
+    offset = mod(face_id+1,2)
+  end subroutine get_face_info_from_id
+
 end module index_conversion
 
 module combinatorics
@@ -300,6 +382,7 @@ module math
   private
   public :: cross_product, vector_norm
   public :: LUdecomp, LUsolve, mat_inv
+  public :: maximal_diameter, maximal_extents
 contains
   pure function cross_product( vec1, vec2 )
     real(dp), dimension(3), intent(in) :: vec1, vec2
@@ -414,6 +497,31 @@ contains
       call lusolve( inv(:,i), lu, p, b, n )
     end do
   end subroutine mat_inv
+
+  pure function maximal_diameter(dim,n_points,points) result(d)
+    use set_constants, only : zero
+    integer, intent(in) :: dim, n_points
+    real(dp), dimension(dim,n_points), intent(in) :: points
+    real(dp) :: d
+    real(dp), dimension(dim) :: delta
+    integer :: i, j
+    d = zero
+    do j = 1,n_points-1
+      do i = j+1,n_points
+        delta = points(:,j) - points(:,i)
+        d = max(d,dot_product(delta,delta))
+      end do
+    end do
+    d = sqrt(d)
+  end function maximal_diameter
+
+  pure function maximal_extents(dim,n_points,points) result(d)
+    use set_constants, only : half
+    integer, intent(in) :: dim, n_points
+    real(dp), dimension(dim,n_points), intent(in) :: points
+    real(dp), dimension(dim) :: d
+    d = half*(maxval(points,dim=2) - minval(points,dim=2))
+  end function maximal_extents
 
 end module math
 
@@ -1346,6 +1454,8 @@ module grid_derived_type
   public :: allocate_grid_block, deallocate_grid_block
   public :: allocate_derived_grid, deallocate_derived_grid
 
+  public :: pack_cell_node_coords
+
   type derived_grid_vars
     real(dp),       allocatable, dimension(:,:,:,:) :: cell_c
     real(dp),       allocatable, dimension(:,:,:)   :: volume
@@ -1396,6 +1506,24 @@ module grid_derived_type
   end type grid_type
 
 contains
+
+  pure function pack_cell_node_coords(idx,bnd_min,bnd_max,coords_in) result(coords_out)
+  integer, dimension(3),                            intent(in)  :: idx, bnd_min, bnd_max
+    real(dp), dimension( 3, bnd_min(1):bnd_max(1), &
+                            bnd_min(2):bnd_max(2), &
+                            bnd_min(3):bnd_max(3) ), intent(in)  :: coords_in
+    real(dp), dimension(3,6)                                     :: coords_out
+    integer :: i,j,k,cnt
+    cnt = 0
+    do k = idx(3),idx(3)+1
+      do j = idx(2),idx(2)+1
+        do i = idx(1),idx(1)+1
+          cnt = cnt + 1
+          coords_out(:,cnt) = coords_in(:,i,j,k)
+        end do
+      end do
+    end do
+  end function pack_cell_node_coords
 
   pure subroutine init_grid_type( this, n_blocks )
     use set_constants, only : zero
@@ -1842,15 +1970,17 @@ module var_rec_derived_type
 
   end type var_rec_t
 
-  ! type :: reconstruction_holder
-  !   private
-  !   integer :: n_cells
-  !   type(var_rec_t), dimension(:), allocatable :: rec
-  ! contains
-  !   private
-  !   procedure, public, pass :: setup => setup_reconstruction_holder
-  !   procedure, public, pass :: destroy => destroy_reconstruction_holder
-  ! end type reconstruction_holder
+  type :: reconstruction_holder
+    private
+    integer :: n_cells
+    integer :: degree
+    type(var_rec_t), dimension(:), allocatable :: rec
+    type(monomial_basis_t) :: monomial_basis
+  contains
+    private
+    procedure, public, pass :: setup => setup_reconstruction_holder
+    procedure, public, pass :: destroy => destroy_reconstruction_holder
+  end type reconstruction_holder
 
   interface var_rec_t
     procedure constructor
@@ -1858,35 +1988,76 @@ module var_rec_derived_type
 
 contains
 
-! subroutine setup_reconstruction_holder( this, gblock )
-!   use grid_derived_type, only : grid_block
-!   use index_conversion,  only : local2global_ghost
-!   type(reconstruction_holder), intent(inout) :: this
-!   type(grid_block), intent(in) :: gblock
+subroutine setup_reconstruction_holder( this, block_num, degree, n_vars, gblock )
+  use math, only : maximal_extents
+  use grid_derived_type, only : grid_block, pack_cell_node_coords
+  use index_conversion,  only : local2global_ghost, global2local_ghost, cell_face_nbors
+  class(reconstruction_holder), intent(inout) :: this
+  integer,                     intent(in)    :: block_num, degree, n_vars
+  type(grid_block),            intent(in)    :: gblock
+  ! type(quad_t), dimension(6), pointer :: fquad => null()
+  real(dp), dimension(gblock%n_dim) :: h_ref
+  real(dp), dimension(3,6) :: nodes
+  integer, dimension(3) :: lo, hi, bnd_min, bnd_max, tmp_idx, tmp_nbor_idx
+  integer, dimension(2*gblock%n_dim) :: nbor_cell_idx, nbor_face_id
+  integer :: i, j, k, cnt, n_int, n_ext, face_idx
 
-!   integer :: i, j, k, cnt
+  call this%destroy()
+  this%degree         = degree
+  this%monomial_basis = monomial_basis_t(this%degree,gblock%n_dim)
+  this%n_cells = product( gblock%n_cells )
+  lo = [1,1,1]        - gblock%n_ghost
+  hi = gblock%n_nodes + gblock%n_ghost
+  bnd_min = [1,1,1]
+  bnd_max = gblock%n_cells
+  allocate( this%rec( this%n_cells ) )
+  cnt = 0
+  do k = 1,gblock%n_cells(3)
+    do j = 1,gblock%n_cells(2)
+      do i = 1,gblock%n_cells(1)
+        cnt = cnt + 1
+        nodes = pack_cell_node_coords( [i,j,k],lo,hi,gblock%node_coords)
+        h_ref = maximal_extents( gblock%n_dim, 6, nodes(1:gblock%n_dim,:) )
+        call cell_face_nbors( gblock%n_dim, cnt, bnd_min(1:gblock%n_dim), &
+                              bnd_max(1:gblock%n_dim), nbor_cell_idx, nbor_face_id, n_int )
+associate( quad => gblock%grid_vars%quad(i,j,k) )
+        this%rec(cnt) = var_rec_t(block_num, cnt, nbor_cell_idx(1:n_int), nbor_cell_idx(n_int+1:), n_vars, this%monomial_basis, quad, h_ref)
+end associate
+      end do
+    end do
+  end do
 
-!   call this%destroy()
-!   this%n_cells = product( gblock%n_cells )
-!   allocate( this%rec( this%n_cells ) )
-!   cnt = 0
-!   do k = 1,gblock%n_cells(3)
-!     do j = 1,gblock%n_cells(2)
-!       do i = 1,gblock%n_cells(1)
-!         cnt = cnt + 1
-! associate( )
+  ! ! subroutine setup_reconstruction( this, nbors, fquads, term_start, term_end )
+  ! do k = 1,this%n_cells
+  !   tmp_idx = global2local_ghost(k,gblock%n_cells,gblock%n_ghost)
+  !   do j = 1,this%rec(k)%n_interior
+      
+  !     face_idx = 
+      
+  !     if ( associated(fquad(j)) ) nullify(fquad(j))
+  !     fquad(j) => 
+  !   end do
+  !   ! fquad= gblock%grid_vars%face_quads()%p(:,:,:)
+  !   ! call this%rec(k)%setup( this%rec( this%rec(k)%int_idx ), )
+  ! end do
+end subroutine setup_reconstruction_holder
 
-! end associate
-!       end do
-!     end do
-!   end do
-! end subroutine setup_reconstruction_holder
+pure elemental subroutine destroy_reconstruction_holder( this )
+  class(reconstruction_holder), intent(inout) :: this
+  if ( allocated(this%rec) ) then
+    call this%rec%destroy()
+    deallocate( this%rec )
+  end if
+  call this%monomial_basis%destroy()
+  this%n_cells = 0
+  this%degree  = 0
+end subroutine destroy_reconstruction_holder
 
 function constructor( self_block, self_idx, int_idx, bnd_idx, n_vars, mono_basis, quad, h_ref ) result(this)
   integer,                    intent(in) :: self_block, self_idx
   integer, dimension(:),      intent(in) :: int_idx, bnd_idx
   integer,                    intent(in) :: n_vars
-  type(monomial_basis_t),     intent(in) :: mono_basis
+  type(monomial_basis_t), target, intent(in) :: mono_basis
   type(quad_t),               intent(in) :: quad
   real(dp), dimension(mono_basis%n_dim), intent(in) :: h_ref
   type(var_rec_t)                        :: this
@@ -1909,7 +2080,7 @@ function constructor( self_block, self_idx, int_idx, bnd_idx, n_vars, mono_basis
   
 end function constructor
 
-pure subroutine destroy_var_rec_t(this)
+pure elemental subroutine destroy_var_rec_t(this)
   class(var_rec_t), intent(inout) :: this
   call this%basis%destroy()
   if ( allocated(this%int_idx) ) deallocate( this%int_idx )
