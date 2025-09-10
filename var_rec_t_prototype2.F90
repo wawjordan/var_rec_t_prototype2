@@ -2038,9 +2038,7 @@ subroutine setup_reconstruction_holder( this, block_num, degree, n_vars, gblock 
       do i = 1,gblock%n_cells(1)
         cnt = cnt + 1
         
-associate( quad => gblock%grid_vars%quad(i,j,k) )
-        this%rec(cnt) = var_rec_t(block_num, cnt, nbor_cell_idx(1:n_int), nbor_cell_idx(n_int+1:), n_vars, this%monomial_basis, quad, h_ref)
-end associate
+        call this%rec(cnt)%setup( this%rec(cnt)% )
       end do
     end do
   end do
