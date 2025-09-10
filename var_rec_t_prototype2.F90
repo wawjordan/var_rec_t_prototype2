@@ -177,6 +177,7 @@ module index_conversion
   public :: global2local, global2local_bnd, global2local_ghost
   public :: local2global, local2global_bnd, local2global_ghost
   public :: in_bound, cell_face_nbors
+  public :: get_face_idx_from_id
 
   interface cell_face_nbors
     module procedure cell_face_nbors_lin
@@ -268,25 +269,31 @@ contains
     integer, dimension(2*dim),     intent(out) :: nbor_face_id
     integer,                       intent(out) :: n_int
     integer, dimension(dim,2*dim) :: nbor_cell_idx_tmp
+    integer, dimension(2*dim) :: nbor_face_id_tmp
     integer, dimension(dim) :: idx_tmp
-    integer :: s, j, n_ext
+    integer :: s, j, n_ext, cnt
+    cnt   = 0
     n_int = 0
     n_ext = 0
     do j = 1,dim
       do s = -1,1,2
+        cnt = cnt + 1
         idx_tmp = idx
         idx_tmp(j) = idx_tmp(j) + s
         if ( in_bound(dim,idx_tmp,bnd_min,bnd_max) ) then
             n_int = n_int + 1
             nbor_cell_idx(:,n_int) = idx_tmp
+            nbor_face_id(n_int) = cnt
         else
           n_ext = n_ext + 1
           nbor_cell_idx_tmp(:,n_ext) = idx_tmp
+          nbor_face_id_tmp(n_ext) = cnt
         end if
       end do
     end do
     do j = 1,n_ext
       nbor_cell_idx(:,n_int+j) = nbor_cell_idx_tmp(:,j)
+      nbor_face_id(n_int+j) = nbor_face_id_tmp(j)
     end do
   end subroutine cell_face_nbors_sub
 
@@ -297,30 +304,17 @@ contains
     integer, dimension(2*dim), intent(out) :: nbor_cell_idx
     integer, dimension(2*dim), intent(out) :: nbor_face_id
     integer,                       intent(out) :: n_int
-    integer, dimension(2*dim) :: nbor_cell_idx_tmp
-    integer, dimension(dim) :: idx, idx_tmp
-    integer :: s, j, n_ext
+    integer, dimension(dim,2*dim) :: nbor_idx
+    integer, dimension(dim) :: idx
+    integer :: s, j, n_ext, cnt
     idx = global2local_bnd(lin_idx,bnd_min,bnd_max)
-    n_int = 0
-    n_ext = 0
-    do j = 1,dim
-      do s = -1,1,2
-        idx_tmp = idx
-        idx_tmp(j) = idx_tmp(j) + s
-
-        if ( in_bound(dim,idx_tmp,bnd_min,bnd_max) ) then
-            n_int = n_int + 1
-            nbor_cell_idx(n_int) = local2global_bnd(idx_tmp,bnd_min,bnd_max)
-        else
-          n_ext = n_ext + 1
-          nbor_cell_idx_tmp(n_ext) = local2global_bnd(idx_tmp,bnd_min,bnd_max)
-        end if
-      end do
-    end do
-    do j = 1,n_ext
-      nbor_cell_idx(n_int+j) = nbor_cell_idx_tmp(j)
+    call cell_face_nbors_sub( dim, idx, bnd_min, bnd_max, nbor_idx, nbor_face_id, n_int )
+    do j = 1,2*dim
+      nbor_cell_idx(j) = local2global_bnd(nbor_idx(:,j),bnd_min,bnd_max)
     end do
   end subroutine cell_face_nbors_lin
+
+  
 
   pure elemental subroutine get_face_info_from_id(face_id,dir,offset)
     integer, intent(in)  :: face_id
@@ -328,6 +322,20 @@ contains
     dir    = (face_id-1)/2 + 1
     offset = mod(face_id+1,2)
   end subroutine get_face_info_from_id
+
+  pure subroutine get_face_idx_from_id(idx,face_id,dir,face_idx)
+    integer, dimension(:),         intent(in) :: idx
+    integer,                       intent(in)  :: face_id
+    integer,                       intent(out) :: dir
+    integer, dimension(size(idx)), intent(out) :: face_idx
+
+    integer, dimension(size(idx)) :: face_offset
+    integer :: offset
+    call get_face_info_from_id(face_id,dir,offset)
+    face_offset = 0
+    face_offset(dir) = offset
+    face_idx = idx + face_offset
+  end subroutine get_face_idx_from_id
 
 end module index_conversion
 
@@ -1948,7 +1956,7 @@ module var_rec_derived_type
     integer :: n_boundary
     integer :: self_idx
     integer :: self_block
-    integer, dimension(:), allocatable      :: int_idx, bnd_idx
+    integer, dimension(:), allocatable      :: nbor_idx, face_id
     type(zero_mean_basis_t)                 :: basis
     ! type(quad_t), pointer                   :: quad
     real(dp), dimension(:,:),   allocatable :: coefs
@@ -2020,6 +2028,16 @@ subroutine setup_reconstruction_holder( this, block_num, degree, n_vars, gblock 
         h_ref = maximal_extents( gblock%n_dim, 6, nodes(1:gblock%n_dim,:) )
         call cell_face_nbors( gblock%n_dim, cnt, bnd_min(1:gblock%n_dim), &
                               bnd_max(1:gblock%n_dim), nbor_cell_idx, nbor_face_id, n_int )
+        this%rec(cnt) = var_rec_t(block_num, cnt, n_int, nbor_cell_idx, nbor_face_id, n_vars, this%monomial_basis, gblock%grid_vars%quad(i,j,k), h_ref)
+      end do
+    end do
+  end do
+
+  do k = 1,gblock%n_cells(3)
+    do j = 1,gblock%n_cells(2)
+      do i = 1,gblock%n_cells(1)
+        cnt = cnt + 1
+        
 associate( quad => gblock%grid_vars%quad(i,j,k) )
         this%rec(cnt) = var_rec_t(block_num, cnt, nbor_cell_idx(1:n_int), nbor_cell_idx(n_int+1:), n_vars, this%monomial_basis, quad, h_ref)
 end associate
@@ -2053,9 +2071,9 @@ pure elemental subroutine destroy_reconstruction_holder( this )
   this%degree  = 0
 end subroutine destroy_reconstruction_holder
 
-function constructor( self_block, self_idx, int_idx, bnd_idx, n_vars, mono_basis, quad, h_ref ) result(this)
-  integer,                    intent(in) :: self_block, self_idx
-  integer, dimension(:),      intent(in) :: int_idx, bnd_idx
+function constructor( self_block, self_idx, n_interior, nbor_idx, face_id, n_vars, mono_basis, quad, h_ref ) result(this)
+  integer,                    intent(in) :: self_block, self_idx, n_interior
+  integer, dimension(:),      intent(in) :: nbor_idx, face_id
   integer,                    intent(in) :: n_vars
   type(monomial_basis_t), target, intent(in) :: mono_basis
   type(quad_t),               intent(in) :: quad
@@ -2066,16 +2084,13 @@ function constructor( self_block, self_idx, int_idx, bnd_idx, n_vars, mono_basis
 
   this%self_block = self_block
   this%self_idx   = self_idx
-  this%n_interior = size(int_idx)
-  allocate( this%int_idx( this%n_interior ) )
-  this%int_idx    = int_idx
-
-  this%n_boundary = size(bnd_idx)
-  allocate( this%bnd_idx( this%n_boundary ) )
-  this%bnd_idx    = bnd_idx
-  this%n_vars = n_vars
+  this%n_interior = n_interior
+  this%n_boundary = size(nbor_idx) - n_interior
+  allocate( this%nbor_idx( size(nbor_idx) ) )
+  this%nbor_idx   = nbor_idx
+  allocate( this%face_id( size(face_id) ) )
+  this%face_id    = face_id
   this%basis = zero_mean_basis_t(mono_basis,quad,h_ref)
-
   allocate( this%coefs(this%basis%n_terms,this%n_vars) )
   
 end function constructor
@@ -2083,8 +2098,8 @@ end function constructor
 pure elemental subroutine destroy_var_rec_t(this)
   class(var_rec_t), intent(inout) :: this
   call this%basis%destroy()
-  if ( allocated(this%int_idx) ) deallocate( this%int_idx )
-  if ( allocated(this%bnd_idx) ) deallocate( this%bnd_idx )
+  if ( allocated(this%nbor_idx) ) deallocate( this%nbor_idx )
+  if ( allocated(this%face_id) ) deallocate( this%face_id )
   if ( allocated(this%coefs  ) ) deallocate( this%coefs   )
   if ( allocated(this%A_inv  ) ) deallocate( this%A_inv   )
   if ( allocated(this%A_inv_B) ) deallocate( this%A_inv_B )
