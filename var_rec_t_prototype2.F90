@@ -1,10 +1,9 @@
 module set_precision
-  use iso_c_binding, only : c_double
+  use iso_fortran_env, only : real64
   implicit none
   private
-  public :: r8, dp
-  integer, parameter :: r8  = c_double
-  integer, parameter :: dp  = r8
+  public :: dp
+  integer, parameter :: dp  = real64
 end module set_precision
 
 module set_constants
@@ -25,92 +24,52 @@ module set_constants
   real(dp), parameter :: pi     = acos(-one)
 end module set_constants
 
-module combinatorics
+module matrix_math
   implicit none
   private
-  public :: nchoosek
-  public :: get_exponents
+  public :: LUdecomp, LUsolve
   public :: mat_inv
-
 contains
-
-!================================== LUdecomp =================================80
+  !================================== LUdecomp =================================80
 !>
 !! LU decomposition, with pivoting, for a regular NxN dense array
 !<
 !=============================================================================80
   subroutine LUdecomp( LU, P, A, m )
-
     use set_precision, only : dp
     use set_constants, only : zero, one
-
     real(dp), dimension(m,m), intent(out) :: LU,P
     real(dp), dimension(m,m), intent(in)  :: A
     integer,                  intent(in)  :: m
-
     real(dp), dimension(m) :: ctemp1, LUtemp
-
     integer  :: col, row, maxi, ipr
     real(dp) :: factor
-
-    continue
-
     LU = A
-
     P = zero
     do col = 1,m
       P(col,col) = one
     end do
-
     do col = 1,m-1
-!Pivoting -----------------------
 !row pivot
       maxi=maxloc(abs(LU(col:m,col)),1)
       ipr=maxi+col-1
-
       if (ipr.ne.col) then
         ctemp1 = LU(ipr,:)
         LU(ipr,:) = LU(col,:)
         LU(col,:) = ctemp1
-
         ctemp1 = P(ipr,:)
         P(ipr,:) = P(col,:)
         P(col,:) = ctemp1
       end if
-
-  !column pivot
-  !maxi=maxloc(abs(LU(col,col:m)),1)
-  !ipr=maxi+col-1
-
-  !if (ipr.ne.col) then
-  !  ctemp1=LU(:,ipr)
-  !  LU(:,ipr)=LU(:,col)
-  !  LU(col,:)=ctemp1
-  !
-  !  ctemp1=P(:,ipr)
-  !  P(:,ipr)=P(:,col)
-  !  P(:,col)=ctemp1
-  !end if
-  !----------------------------------
-      !print*, LU(col,col)
       if ( abs(LU(col,col)) > zero ) then
         do row = col+1,m
           factor = LU(row,col)/LU(col,col)
-    !      print*, row, col, m, factor
-    !      print*, LU(row,col+1:m)
-    !      print*, factor*LU(col,col+1:m)
-    !      print*,LU(row,col+1:m) - factor*LU(col,col+1:m)
-    !      print*,
-
           LUtemp(col+1:m) = LU(row,col+1:m) - factor*LU(col,col+1:m)
           LU(row,col+1:m) = LUtemp(col+1:m)
           LU(row,col) = factor
-
         end do
       end if
-!      write(*,'(9f12.6)')(LU(i,:),i=1,m)
     end do
-
   end subroutine LUdecomp
 
 !================================== LUsolve ==================================80
@@ -119,36 +78,26 @@ contains
 !<
 !=============================================================================80
   subroutine LUsolve( x, LU, P, bin, m )
-
     use set_precision, only : dp
-
     real(dp), dimension(m),   intent(out) :: x
     real(dp), dimension(m,m), intent(in)  :: LU, P
     real(dp), dimension(m),   intent(in)  :: bin
     integer,                  intent(in)  :: m
-
     integer :: i, row
-
     real(dp), dimension(m) :: b, d
-
-    continue
-
 ! Permute b matrix
     b = matmul(P,bin)
-
 ! Forward substitution
     d(1) = b(1)
     do row = 2,m
       d(row) = b(row) - sum( LU(row,1:row-1)*d(1:row-1) )
     end do
-
 ! Backward substitution
     x(m) = d(m)/LU(m,m)
     do i = 1,m-1
       row = m-i
       x(row) = ( d(row) - sum( LU(row,row+1:m)*x(row+1:m) ) ) / LU(row,row)
     end do
-
   end subroutine LUsolve
 
 !================================== mat_inv ==================================80
@@ -157,67 +106,32 @@ contains
 !<
 !=============================================================================80
   subroutine mat_inv( mat, inv, n )
-
     use set_precision, only : dp
     use set_constants, only : zero, one
-
     integer,                  intent(in)  :: n
     real(dp), dimension(n,n), intent(in)  :: mat
     real(dp), dimension(n,n), intent(out) :: inv
-
     integer                  :: i
     real(dp), dimension(n)   :: b
     real(dp), dimension(n,n) :: lu, p
-
-    continue
-
     call ludecomp( lu, p, mat, n )
-
     inv = zero
     do i = 1,n
       b = zero
       b(i) = one
       call lusolve( inv(:,i), lu, p, b, n )
     end do
-
   end subroutine mat_inv
 
-  pure function nchoosek( n, k ) result( c )
-    integer, intent(in) :: n, k
-    integer             :: c
-    integer :: i
-    c = 0
-    if (k>n) return
+end module matrix_math
 
-    c = 1
-    do i = 1, min(n-k,k)
-      c = c * ( n - (i-1) )
-      c = c / i
-    end do
-  end function nchoosek
-
-  pure subroutine get_exponents(n_dim,degree,n_terms,exponents,idx)
-    integer, intent(in) :: n_dim, degree, n_terms
-    integer, dimension(n_dim,n_terms), intent(out) :: exponents
-    integer, dimension(degree+1),      intent(out) :: idx
-    integer :: curr_total_degree, j, cnt, N_full_terms
-    integer, dimension(n_dim) :: tmp_exp, nsub
-    cnt = 0
-    do curr_total_degree = 0,degree
-      idx(curr_total_degree+1) = cnt + 1
-      N_full_terms = (curr_total_degree+1) ** n_dim
-      do j = 0,N_full_terms
-
-        nSub = curr_total_degree + 1
-        tmp_exp = global2local(j+1,nsub)-1
-        if ( sum(tmp_exp) == curr_total_degree ) then
-          cnt = cnt + 1
-          exponents(:,cnt) = tmp_exp
-        end if
-      end do
-    end do
-  end subroutine get_exponents
-
+module index_conversion
+  implicit none
+  private
+  public :: global2local, global2local_bnd, global2local_ghost
+  public :: local2global, local2global_bnd, local2global_ghost
+contains
+  
   pure function global2local(iG,nSub) result(iSub)
     integer,               intent(in) :: iG
     integer, dimension(:), intent(in) :: nSub
@@ -237,6 +151,100 @@ contains
       iGtmp = iTmp
     end do
   end function global2local
+
+  pure function local2global(iSub,nSub) result(iG)
+    integer, dimension(:), intent(in) :: iSub, nSub
+    integer :: iG
+    integer :: nDims, p, i
+    nDims = size(iSub)
+    p = 1
+    iG = 1
+    do i = 1,nDims
+        iG = iG + ( iSub(i) - 1 )*p
+        p = p*nSub(i)
+    end do
+  end function local2global
+
+  pure function global2local_ghost(iG,nSub,nGhost) result(iSub)
+    integer,               intent(in) :: iG
+    integer, dimension(:), intent(in) :: nSub, nGhost
+    integer, dimension(size(nSub)) :: iSub, nSub2
+    nSub2 = nSub + 2*nGhost
+    iSub = global2local_safe(iG,nSub2)
+    iSub = iSub - nGhost
+  end function global2local_ghost
+
+  pure function local2global_ghost(iSub,nSub,nGhost) result(iG)
+    integer, dimension(:), intent(in) :: iSub, nSub, nGhost
+    integer, dimension(size(nSub)) :: iSub2, nSub2
+    integer :: iG
+    iSub2 = iSub + nGhost
+    nSub2 = nSub + 2*nGhost
+    iG = local2global(iSub2,nSub2)
+  end function local2global_ghost
+
+  pure function global2local_bnd(iG,lo,hi) result(iSub)
+    integer,               intent(in) :: iG
+    integer, dimension(:), intent(in) :: lo, hi
+    integer, dimension(size(lo)) :: iSub, nSub
+    nSub = hi - lo + 1
+    iSub = global2local(iG,nSub)
+    iSub = iSub + lo - 1
+  end function global2local_bnd
+
+  pure function local2global_bnd(iSub,lo,hi) result(iG)
+    integer, dimension(:), intent(in) :: iSub, lo, hi
+    integer, dimension(size(iSub)) :: idx, nSub
+    integer :: iG
+    idx  = iSub - lo + 1
+    nSub = hi - lo + 1
+    iG   = local2global(idx,nSub)
+  end function local2global_bnd
+
+end module index_conversion
+
+module combinatorics
+  implicit none
+  private
+  public :: nchoosek
+  public :: get_exponents
+contains
+
+  pure function nchoosek( n, k ) result( c )
+    integer, intent(in) :: n, k
+    integer             :: c
+    integer :: i
+    c = 0
+    if (k>n) return
+
+    c = 1
+    do i = 1, min(n-k,k)
+      c = c * ( n - (i-1) )
+      c = c / i
+    end do
+  end function nchoosek
+
+  pure subroutine get_exponents(n_dim,degree,n_terms,exponents,idx)
+    use index_conversion, only : global2local
+    integer, intent(in) :: n_dim, degree, n_terms
+    integer, dimension(n_dim,n_terms), intent(out) :: exponents
+    integer, dimension(degree+1),      intent(out) :: idx
+    integer :: curr_total_degree, j, cnt, N_full_terms
+    integer, dimension(n_dim) :: tmp_exp, nsub
+    cnt = 0
+    do curr_total_degree = 0,degree
+      idx(curr_total_degree+1) = cnt + 1
+      N_full_terms = (curr_total_degree+1) ** n_dim
+      do j = 0,N_full_terms
+        nSub = curr_total_degree + 1
+        tmp_exp = global2local(j+1,nsub)-1
+        if ( sum(tmp_exp) == curr_total_degree ) then
+          cnt = cnt + 1
+          exponents(:,cnt) = tmp_exp
+        end if
+      end do
+    end do
+  end subroutine get_exponents
 
 end module combinatorics
 
@@ -387,6 +395,646 @@ end function get_time
 
 end module timer_derived_type
 
+module vector_derived_type
+  use set_precision, only : dp
+  use set_constants, only : zero
+  implicit none
+  private
+  public :: face_vec
+  public :: face_vec_ptr_3D
+  type face_vec
+    integer :: n
+    real(dp), allocatable, dimension(:,:) :: v
+  contains
+    private
+    procedure, public, pass :: create  => allocate_face_vec
+    procedure, public, pass :: destroy => deallocate_face_vec
+  end type face_vec
+
+  type face_vec_ptr_3D
+    type(face_vec), dimension(:,:,:), pointer :: p => null()
+  contains
+    private
+    procedure, public, pass :: destroy => destroy_face_vec_ptr_3D
+  end type face_vec_ptr_3D
+
+contains
+
+  subroutine allocate_face_vec( this, n )
+    class(face_vec), intent(inout) :: this
+    integer,       intent(in)      :: n
+    continue
+    this%n = n
+    allocate( this%v(3,n) )
+    this%v = zero
+  end subroutine allocate_face_vec
+
+  pure elemental subroutine deallocate_face_vec( this )
+    class(face_vec), intent(inout) :: this
+    continue
+    this%n = 0
+    if( allocated( this%v  ) ) deallocate( this%v )
+  end subroutine deallocate_face_vec
+
+  pure elemental subroutine destroy_face_vec_ptr_3D( this )
+    class(face_vec_ptr_3D), intent(inout) :: this
+    this%p => null()
+  end subroutine destroy_face_vec_ptr_3D
+end module vector_derived_type
+
+module pointers
+  use set_precision, only : dp
+  implicit none
+  private
+  public :: array_ptr_3D_real, array_ptr_4D_real
+
+  type array_ptr_3D_real
+    real(dp), dimension(:,:,:),     pointer :: p => null()
+  contains
+    private
+    procedure, public, pass :: destroy => destroy_real_3D
+  end type array_ptr_3D_real
+
+  type array_ptr_4D_real
+    real(dp), dimension(:,:,:,:),   pointer :: p => null()
+  contains
+    private
+    procedure, public, pass :: destroy => destroy_real_4D
+  end type array_ptr_4D_real
+
+contains
+
+  pure elemental subroutine destroy_real_3D( this )
+    class(array_ptr_3D_real), intent(inout) :: this
+    this%p => null()
+  end subroutine destroy_real_3D
+
+  pure elemental subroutine destroy_real_4D( this )
+    class(array_ptr_4D_real), intent(inout) :: this
+    this%p => null()
+  end subroutine destroy_real_4D
+end module pointers
+
+module linspace_helper
+  use set_precision, only : dp
+  private
+  public :: unit_cartesian_mesh_cat
+  public :: linspace, meshgrid2, meshgrid3
+contains
+  pure function unit_cartesian_mesh_cat(nx,ny,nz) result(xyz)
+    integer, intent(in) :: nx, ny, nz
+    real(dp), dimension(3,nx,ny,nz) :: xyz
+    real(dp), dimension(nx,ny,nz) :: tmp_x, tmp_y, tmp_z
+    integer :: i, j, k
+
+    call unit_cartesian_mesh(nx,ny,nz,tmp_x,tmp_y,tmp_z)
+
+    do k = 1,nz
+      do j = 1,ny
+        do i = 1,nx
+          xyz(1,i,j,k) = tmp_x(i,j,k)
+          xyz(2,i,j,k) = tmp_y(i,j,k)
+          xyz(3,i,j,k) = tmp_z(i,j,k)
+        end do
+      end do
+    end do
+  end function unit_cartesian_mesh_cat
+
+  pure subroutine unit_cartesian_mesh(nx,ny,nz,x,y,z)
+    use set_constants, only : zero, one
+    integer, intent(in) :: nx, ny, nz
+    real(dp), dimension(nx,ny,nz), intent(out) :: x, y, z
+
+    call meshgrid3( linspace(nx,zero,one), &
+                    linspace(ny,zero,one), &
+                    linspace(nz,zero,one), x,y,z)
+  end subroutine unit_cartesian_mesh
+
+  pure function linspace(N,x1,x2) result(array)
+    integer,  intent(in)   :: N
+    real(dp), intent(in)   :: x1, x2
+    real(dp), dimension(N) :: array
+    real(dp) :: range_den
+    integer :: i
+    if (N==0) return
+    if (N==1) then
+      array(1) = x1
+      return
+    end if
+    range_den = (x2-x1)/real(N-1,dp)
+    do i = 1,N
+      array(i) = x1 + range_den*real(i-1,dp)
+    end do
+  end function linspace
+
+  pure subroutine meshgrid2(x1,x2,x1_array,x2_array)
+    real(dp), dimension(:),   intent(in)  :: x1, x2
+    real(dp), dimension(:,:), intent(out) :: x1_array, x2_array
+    integer :: N1, N2
+    N1 = size(x1)
+    N2 = size(x2)
+    x1_array = spread(x1,2,N2)
+    x2_array = spread(x2,1,N1)
+  end subroutine meshgrid2
+
+  pure subroutine meshgrid3(x1,x2,x3,x1_array,x2_array,x3_array)
+    real(dp), dimension(:),     intent(in)  :: x1, x2, x3
+    real(dp), dimension(:,:,:), intent(out) :: x1_array, x2_array, x3_array
+    real(dp), dimension(size(x1),size(x2)) :: x1_tmp
+    real(dp), dimension(size(x2),size(x3)) :: x2_tmp
+    real(dp), dimension(size(x2),size(x3),size(x1)) :: x2_tmp2
+    real(dp), dimension(size(x3),size(x1)) :: x3_tmp
+    real(dp), dimension(size(x3),size(x1),size(x2)) :: x3_tmp2
+    integer, parameter, dimension(3) :: o2 = [2,3,1], o3 = [3,1,2]
+    integer :: N1, N2, N3
+    N1 = size(x1)
+    N2 = size(x2)
+    N3 = size(x3)
+
+    x1_tmp   = spread(x1,2,N2)
+    x2_tmp   = spread(x2,2,N3)
+    x3_tmp   = spread(x3,2,N1)
+    x1_array = spread(x1_tmp,3,N3)
+    x2_tmp2  = spread(x2_tmp,3,N1)
+    x3_tmp2  = spread(x3_tmp,3,N2)
+    x2_array = reshape(x2_tmp2,shape(x2_array),order=o2)
+    x3_array = reshape(x3_tmp2,shape(x3_array),order=o3)
+  end subroutine meshgrid3
+
+end module linspace_helper
+
+module math
+  use set_precision, only : dp
+  implicit none
+  private
+  public :: cross_product, vector_norm
+contains
+  pure function cross_product( vec1, vec2 )
+    real(dp), dimension(3), intent(in) :: vec1, vec2
+    real(dp), dimension(3)             :: cross_product
+    cross_product(1) =  ( vec1(2)*vec2(3) - vec1(3)*vec2(2) )
+    cross_product(2) = -( vec1(1)*vec2(3) - vec1(3)*vec2(1) )
+    cross_product(3) =  ( vec1(1)*vec2(2) - vec1(2)*vec2(1) )
+  end function cross_product
+
+  pure function vector_norm( vector )
+    use set_precision, only : dp
+    use set_constants, only : zero
+    real(dp), dimension(:), intent(in) :: vector
+    real(dp)                           :: vector_norm
+    integer :: i
+    vector_norm = zero
+    do i = 1, size(vector)
+      vector_norm = vector_norm + vector(i)**2
+    end do
+    vector_norm = sqrt( vector_norm )
+  end function vector_norm
+
+end module math
+
+module lagrange_interpolation
+  use set_precision, only : dp
+  use set_constants, only : zero, one, two, half
+  implicit none
+  private
+  ! public :: xb, wb, Dmat
+  public :: generate_1D_barycentric_info, destroy_1D_barycentric_info
+  public :: lagbary, lagbary_wderiv
+  public :: lagbary_2D, lagbary_2D_wgrad
+  public :: lagbary_3D, lagbary_3D_wgrad
+  public :: calc_grid_metrics, jacobian_determinant
+  public :: normal_vectors
+  interface jacobian_determinant
+    module procedure jacobian_determinant_2D
+    module procedure jacobian_determinant_3D
+  end interface jacobian_determinant
+
+  integer :: Nmax = 10
+  real(dp), dimension(:,:,:,:), allocatable :: Dmat
+  real(dp), dimension(:,:),   allocatable :: xb, wb
+contains
+
+  elemental logical function almost_equal(a,b)
+    real(dp), intent(in) :: a, b
+    logical :: test1, test2, test3
+    test1 = ( (a==zero) .or. (b==zero) )
+    test2 = ( abs(a-b) <= two*epsilon(one) )
+    test3 = ( ( abs(a-b) <= epsilon(abs(a)) ) .and. &
+            ( abs(a-b) <= epsilon(abs(b)) ) )
+    almost_equal = ( ( test1 .and. test2 ) .or. ( (.not. test1) .and. test3 ) )
+  end function almost_equal
+
+  function barycentric_weights(x) result(w)
+    real(dp), dimension(:), intent(in) :: x
+    real(dp), dimension(size(x))       :: w
+    integer :: j, k, N
+    N = size(x)
+    w = one
+    do j = 2,N
+      do k = 1,j-1
+        w(k) = w(k) * ( x(k) - x(j) )
+        w(j) = w(j) * ( x(j) - x(k) )
+      end do
+    end do
+    w = one/w
+  end function barycentric_weights
+
+  pure function polynomial_derivative_matrix(x,w) result(D)
+    real(dp), dimension(:), intent(in) :: x, w
+    real(dp), dimension(size(x),size(x)) :: D
+    integer :: i, j, N
+    D = zero
+    N = size(x)
+    do i = 1,N
+      do j = 1,N
+        if (j/=i) then
+          D(i,j) = w(j)/w(i) * one / ( x(i) - x(j) )
+          D(i,i) = D(i,i) - D(i,j)
+        end if
+      end do
+    end do
+  end function polynomial_derivative_matrix
+
+  pure function mth_order_polynomial_derivative_matrix(x,w,M) result(D)
+    real(dp), dimension(:), intent(in) :: x, w
+    integer,                intent(in) :: M
+    real(dp), dimension(size(x),size(x),M) :: D
+    integer :: i, j, k, N
+    D = zero
+    N = size(x)
+    D(:,:,1) = polynomial_derivative_matrix(x,w)
+    do k = 2,M
+      do i = 1,N
+        D(i,i,k) = zero
+        do j = 1,N
+          if (j/=i) then
+            D(i,j,k) = ( real(k,dp) / (x(i) - x(j)) )                          &
+                     * ( w(j)/w(i)*D(i,i,k-1) - D(i,j,k-1) )
+            D(i,i,k) = D(i,i,k) - D(i,j,k)
+          end if
+        end do
+      end do
+    end do
+  end function mth_order_polynomial_derivative_matrix
+
+  subroutine generate_1D_barycentric_info(N)
+    use linspace_helper, only : linspace
+    integer, intent(in), optional :: N
+    integer :: j
+    real(dp) :: x1 = -one, x2 = one
+    if ( present(N) ) then
+      if ( N > Nmax ) then
+        Nmax = N
+        continue
+      end if
+    end if
+    if ( allocated(Dmat) ) deallocate(Dmat)
+    if ( allocated(xb) )   deallocate(xb)
+    if ( allocated(wb) )   deallocate(wb)
+    allocate( Dmat(Nmax,Nmax,Nmax,2), xb(Nmax,Nmax), wb(Nmax,Nmax) )
+    Dmat = zero; xb = zero; wb = zero
+    wb(1,1) = one
+    do j = 2,Nmax
+      ! call linspace(x1,x2,xb(1:j,j))
+      xb(1:j,j) = linspace(j,x1,x2)
+      wb(1:j,j) = barycentric_weights( xb(1:j,j) )
+      Dmat(1:j,1:j,j,:) = mth_order_polynomial_derivative_matrix( xb(1:j,j), wb(1:j,j), 2 )
+    end do
+  end subroutine generate_1D_barycentric_info
+
+  subroutine destroy_1D_barycentric_info
+    if ( allocated(Dmat) ) deallocate(Dmat)
+    if ( allocated(xb) ) deallocate(xb)
+    if ( allocated(wb) ) deallocate(wb)
+  end subroutine destroy_1D_barycentric_info
+
+  pure subroutine lagbary(x,dir,fval,Npts,val)
+    real(dp),               intent(in)  :: x
+    integer,                intent(in)  :: dir
+    integer,  dimension(:), intent(in)  :: Npts
+    real(dp), dimension(:), intent(in)  :: fval
+    real(dp),               intent(out) :: val
+    real(dp) :: A, F
+    real(dp) :: x1, t1
+    integer :: j, N
+    A = zero
+    F = zero
+    N = Npts(dir)
+    do j = 1,N
+      x1 = xb(j,N) - x
+      if ( almost_equal(x1,zero) ) then
+        val = fval(j)
+        return
+      end if
+      t1 = wb(j,N)/x1
+      A = A + t1 * fval(j)
+      F = F + t1
+    end do
+    val = A/F
+  end subroutine lagbary
+
+  pure subroutine lagbary_wderiv(x,dir,fval,Npts,val,dval)
+    real(dp),               intent(in)  :: x
+    integer,                intent(in)  :: dir
+    integer,  dimension(:), intent(in)  :: Npts
+    real(dp), dimension(:), intent(in)  :: fval
+    real(dp),               intent(out) :: val, dval
+    real(dp) :: A, B, C, F
+    real(dp) :: x1, t1, t2, FF, AC
+    integer :: j, N
+    A = zero
+    B = zero
+    C = zero
+    F = zero
+    N = Npts(dir)
+    do j = 1,N
+      x1 = xb(j,N) - x
+      if ( almost_equal(x1,zero) ) then
+        val = fval(j)
+        dval = dot_product( Dmat(j,1:N,N,1), fval )
+        return
+      end if
+      t1 = wb(j,N)/x1
+      A = A + t1 * fval(j)
+      F = F + t1
+      t2 = t1/x1
+      B = B + t2 * fval(j)
+      C = C + t2
+    end do
+    val = A/F
+    FF = F*F
+    AC = A*C
+    dval = (B * F - AC)/FF
+  end subroutine lagbary_wderiv
+
+  pure subroutine lagbary_wderiv2(x,dir,fval,Npts,val,dval,d2val)
+    real(dp),               intent(in)  :: x
+    integer,                intent(in)  :: dir
+    integer,  dimension(:), intent(in)  :: Npts
+    real(dp), dimension(:), intent(in)  :: fval
+    real(dp),               intent(out) :: val, dval, d2val
+    real(dp) :: A, B, C, D, E, F
+    real(dp) :: x1, t1, t2, t3, FF, AC
+    integer :: j, N
+    A = zero
+    B = zero
+    C = zero
+    D = zero
+    E = zero
+    F = zero
+    N = Npts(dir)
+    do j = 1,N
+      x1 = xb(j,N) - x
+      if ( almost_equal(x1,zero) ) then
+        val   = fval(j)
+        dval  = dot_product( Dmat(j,1:N,N,1), fval )
+        d2val = dot_product( Dmat(j,1:N,N,2), fval )
+        return
+      end if
+      t1 = wb(j,N)/x1
+      A = A + t1 * fval(j)
+      F = F + t1
+      t2 = t1/x1
+      B = B + t2 * fval(j)
+      C = C + t2
+      t3 = t2/x1
+      D = D + t3 * fval(j)
+      E = E + t3
+    end do
+    val = A/F
+    FF = F*F
+    AC = A*C
+    dval = (B * F - AC)/FF
+    d2val = ( two * D ) / F - ( two * E * A ) / FF - ( two * B * C ) / FF      &
+          + ( two * C * AC ) / ( FF * F )
+  end subroutine lagbary_wderiv2
+
+  pure subroutine lagbary_2D(x,fval,Npts,val)
+    real(dp), dimension(2),   intent(in)  :: x
+    real(dp), dimension(:,:), intent(in)  :: fval
+    integer,  dimension(2),   intent(in)  :: Npts
+    real(dp),                 intent(out) :: val
+    real(dp), dimension(size(fval,2)) :: tmp
+    integer :: j
+    do j = 1,Npts(2)
+      call lagbary( x(1), 1, fval(:,j), Npts, tmp(j) )
+    end do
+    call lagbary( x(2), 2, tmp, Npts, val )
+  end subroutine lagbary_2D
+
+  pure subroutine lagbary_2D_wgrad(x,fval,Npts,val,grad)
+    real(dp), dimension(2),   intent(in)  :: x
+    real(dp), dimension(:,:), intent(in)  :: fval
+    integer,  dimension(2),   intent(in)  :: Npts
+    real(dp),                 intent(out) :: val
+    real(dp), dimension(2),   intent(out) :: grad
+    real(dp), dimension(size(fval,2)) :: tmp, gtmp
+    integer :: j
+    do j = 1,Npts(2)
+      call lagbary_wderiv( x(1), 1, fval(:,j), Npts, tmp(j), gtmp(j) )
+    end do
+    call lagbary_wderiv( x(2), 2,  tmp, Npts, val, grad(2) )
+    call lagbary(        x(2), 2, gtmp, Npts,      grad(1) )
+  end subroutine lagbary_2D_wgrad
+
+  pure subroutine lagbary_2D_whess(x,fval,Npts,val,grad,hess)
+    real(dp), dimension(2),   intent(in)  :: x
+    real(dp), dimension(:,:), intent(in)  :: fval
+    integer,  dimension(2),   intent(in)  :: Npts
+    real(dp),                 intent(out) :: val
+    real(dp), dimension(2),   intent(out) :: grad
+    real(dp), dimension(3),   intent(out) :: hess
+    real(dp), dimension(size(fval,2)) :: tmp, gtmp, htmp
+    integer :: j
+    do j = 1,Npts(2)
+      call lagbary_wderiv2( x(1), 1, fval(:,j), Npts, tmp(j), gtmp(j), htmp(j) )
+    end do
+    call lagbary_wderiv2( x(2), 2,  tmp, Npts, val, grad(2), hess(3) )
+    call lagbary_wderiv(  x(2), 2, gtmp, Npts,      grad(1), hess(2) )
+    call lagbary(         x(2), 2, htmp, Npts,               hess(1) )
+  end subroutine lagbary_2D_whess
+
+  pure subroutine lagbary_3D(x,fval,Npts,val)
+    real(dp), dimension(3),     intent(in)  :: x
+    real(dp), dimension(:,:,:), intent(in)  :: fval
+    integer,  dimension(3),     intent(in)  :: Npts
+    real(dp),                   intent(out) :: val
+    real(dp), dimension(size(fval,2),size(fval,3)) :: tmp
+    real(dp), dimension(size(fval,3)) :: tmp2
+    integer :: k, j
+    do k = 1,Npts(3)
+      do j = 1,Npts(2)
+        call lagbary( x(1), 1, fval(:,j,k), Npts, tmp(j,k) )
+      end do
+    end do
+    do k = 1,Npts(3)
+      call lagbary( x(2), 2, tmp(:,k), Npts, tmp2(k) )
+    end do
+    call lagbary( x(3), 3, tmp2, Npts, val )
+  end subroutine lagbary_3D
+
+  pure subroutine lagbary_3D_wgrad(x,fval,Npts,val,grad)
+    real(dp), dimension(3),     intent(in)  :: x
+    real(dp), dimension(:,:,:), intent(in)  :: fval
+    integer,  dimension(3),     intent(in)  :: Npts
+    real(dp),                   intent(out) :: val
+    real(dp), dimension(3),     intent(out) :: grad
+    real(dp), dimension(size(fval,2),size(fval,3)) :: tmp, gtmp0
+    real(dp), dimension(size(fval,3)) :: tmp2, gtmp1, gtmp2
+    integer :: k, j
+    do k = 1,Npts(3)
+      do j = 1,Npts(2)
+        call lagbary_wderiv( x(1), 1, fval(:,j,k), Npts, tmp(j,k), gtmp0(j,k) )
+      end do
+    end do
+    do k = 1,Npts(3)
+      call lagbary_wderiv( x(2), 2,   tmp(:,k), Npts, tmp2(k), gtmp2(k) )
+      call lagbary(        x(2), 2, gtmp0(:,k), Npts, gtmp1(k) )
+    end do
+    call lagbary_wderiv( x(3), 3,  tmp2, Npts, val, grad(3) )
+    call lagbary(        x(3), 3, gtmp2, Npts,      grad(2) )
+    call lagbary(        x(3), 3, gtmp1, Npts,      grad(1) )
+  end subroutine lagbary_3D_wgrad
+
+  pure subroutine lagbary_3D_whess(x,fval,Npts,val,grad,hess)
+    real(dp), dimension(3),     intent(in)  :: x
+    real(dp), dimension(:,:,:), intent(in)  :: fval
+    integer,  dimension(3),     intent(in)  :: Npts
+    real(dp),                   intent(out) :: val
+    real(dp), dimension(3),     intent(out) :: grad
+    real(dp), dimension(6),     intent(out) :: hess
+    real(dp), dimension(size(fval,2),size(fval,3)) :: tmp, gtmp, htmp
+    real(dp), dimension(size(fval,3)) :: tmp1, gtmp1, gtmp2, htmp1, htmp2, htmp3
+    integer :: k, j
+    do k = 1,Npts(3)
+      do j = 1,Npts(2)
+        call lagbary_wderiv2( x(1), 1, fval(:,j,k), Npts, tmp(j,k), gtmp(j,k), htmp(j,k) )
+      end do
+    end do
+    do k = 1,Npts(3)
+      call lagbary_wderiv2( x(2), 2,  tmp(:,k), Npts, tmp1(k), gtmp2(k), htmp3(k) )
+      call lagbary_wderiv(  x(2), 2, gtmp(:,k), Npts,          gtmp1(k), htmp2(k) )
+      call lagbary(         x(2), 2, htmp(:,k), Npts,                    htmp1(k) )
+    end do
+    call lagbary_wderiv2( x(3), 3,  tmp1, Npts, val, grad(3), hess(6) )
+    call lagbary_wderiv(  x(3), 3, gtmp2, Npts,      grad(2), hess(5) )
+    call lagbary(         x(3), 3, htmp3, Npts,               hess(4) )
+    call lagbary_wderiv(  x(3), 3, gtmp1, Npts,      grad(1), hess(3) )
+    call lagbary(         x(3), 3, htmp2, Npts,               hess(2) )
+    call lagbary(         x(3), 3, htmp1, Npts,               hess(1) )
+  end subroutine lagbary_3D_whess
+
+  pure function covariant_base_vectors_3D(point,X1,X2,X3) result(a)
+    real(dp), dimension(3),     intent(in) :: point
+    real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
+    real(dp), dimension(3,3) :: a
+    real(dp) :: junk
+    integer, dimension(3) :: Npts
+    Npts = shape(X1)
+    call lagbary_3D_wgrad(point,X1,Npts,junk,a(1,:))
+    call lagbary_3D_wgrad(point,X2,Npts,junk,a(2,:))
+    call lagbary_3D_wgrad(point,X3,Npts,junk,a(3,:))
+  end function covariant_base_vectors_3D
+
+  function contravariant_base_vectors_3D(point,X1,X2,X3) result(a)
+    real(dp), dimension(3),     intent(in) :: point
+    real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
+    real(dp), dimension(3,3) :: a
+    real(dp) :: J
+    a = calc_grid_metrics(point,X1,X2,X3)
+    J = jacobian_determinant_3D(point,X1,X2,X3)
+    a = a / J
+  end function contravariant_base_vectors_3D
+
+  function calc_grid_metrics(point,X1,X2,X3) result(Ja)
+    use pointers, only : array_ptr_3D_real
+    real(dp), dimension(3), intent(in) :: point
+    real(dp), dimension(:,:,:), intent(in), target :: X1, X2, X3
+    real(dp), dimension(3,3) :: Ja
+    real(dp), dimension(size(X1,1),size(X1,2),size(X1,3)) :: X_l, X_m, tmp
+    type(array_ptr_3D_real), dimension(3) :: X
+    integer, dimension(3) :: Npts
+    integer :: i
+    real(dp) :: junk
+    real(dp), dimension(3) :: dX_l, dX_m, dd1, dd2, dd3
+    Ja = zero
+    X(1)%p => X1
+    X(2)%p => X2
+    X(3)%p => X3
+    Npts = shape(X1)
+    do i = 1,3
+      X_l = X(mod(4+i,3)+1)%p
+      X_m = X(mod(3+i,3)+1)%p
+      call lagbary_3D_wgrad( point, X_l, Npts, junk, dX_l )
+      call lagbary_3D_wgrad( point, X_m, Npts, junk, dX_m )
+      tmp = X_l*dX_m(1) - X_m*dX_l(1)
+      call lagbary_3D_wgrad( point, tmp, Npts, junk, dd1 )
+      tmp = X_l*dX_m(2) - X_m*dX_l(2)
+      call lagbary_3D_wgrad( point, tmp, Npts, junk, dd2 )
+      tmp = X_l*dX_m(3) - X_m*dX_l(3)
+      call lagbary_3D_wgrad( point, tmp, Npts, junk, dd3 )
+      Ja(i,1) = -half*( dd3(2) - dd2(3) );
+      Ja(i,2) = -half*( dd1(3) - dd3(1) );
+      Ja(i,3) = -half*( dd2(1) - dd1(2) );
+    end do
+    nullify( X(1)%p, X(2)%p, X(3)%p ) ! may not be necessary
+  end function calc_grid_metrics
+
+
+  pure function normal_vectors(point,X1,X2,X3) result(Nvec)
+    use math, only : cross_product, vector_norm
+    implicit none
+    real(dp), dimension(3), intent(in) :: point
+    real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
+    real(dp), dimension(3,3) :: Nvec
+    integer, dimension(3) :: Npts
+    real(dp), dimension(3,3) :: A
+    real(dp) :: junk
+    Npts = shape(X1)
+    call lagbary_3D_wgrad(point,X1,Npts,junk,A(:,1))
+    call lagbary_3D_wgrad(point,X2,Npts,junk,A(:,2))
+    call lagbary_3D_wgrad(point,X3,Npts,junk,A(:,3))
+
+    Nvec(:,1) = cross_product(A(:,2),A(:,3))
+    Nvec(:,2) = cross_product(A(:,1),A(:,3))
+    Nvec(:,3) = cross_product(A(:,1),A(:,2))
+
+    Nvec(:,1) = Nvec(:,1)/vector_norm(Nvec(:,1))
+    Nvec(:,2) = Nvec(:,2)/vector_norm(Nvec(:,2))
+    Nvec(:,3) = Nvec(:,3)/vector_norm(Nvec(:,3))
+  end function normal_vectors
+
+  pure function jacobian_determinant_2D(point,X1,X2,X3) result(Jac)
+    implicit none
+    real(dp), dimension(2), intent(in) :: point
+    real(dp), dimension(:,:), intent(in) :: X1, X2, X3
+    real(dp) :: Jac, junk
+    integer, dimension(2) :: Npts
+    real(dp), dimension(2,3) :: A
+    Npts = shape(X1)
+    call lagbary_2D_wgrad(point,X1,Npts,junk,A(:,1))
+    call lagbary_2D_wgrad(point,X2,Npts,junk,A(:,2))
+    call lagbary_2D_wgrad(point,X3,Npts,junk,A(:,3))
+    Jac = A(1,1)*A(2,2) - A(1,2)*A(2,1)
+  end function jacobian_determinant_2D
+
+  pure function jacobian_determinant_3D(point,X1,X2,X3) result(Jac)
+    implicit none
+    real(dp), dimension(3), intent(in) :: point
+    real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
+    real(dp) :: Jac, junk
+    integer, dimension(3) :: Npts
+    real(dp), dimension(3,3) :: A
+    Npts = shape(X1)
+    call lagbary_3D_wgrad(point,X1,Npts,junk,A(:,1))
+    call lagbary_3D_wgrad(point,X2,Npts,junk,A(:,2))
+    call lagbary_3D_wgrad(point,X3,Npts,junk,A(:,3))
+    Jac = A(1,1)*A(2,2)*A(3,3) + A(2,1)*A(3,2)*A(1,3) + A(3,1)*A(1,2)*A(2,3) &
+        - A(3,1)*A(2,2)*A(1,3) - A(2,1)*A(1,2)*A(3,3) - A(1,1)*A(3,2)*A(2,3)
+  end function jacobian_determinant_3D
+
+end module lagrange_interpolation
+
 module quadrature_derived_type
 
   use set_precision,       only : dp
@@ -395,18 +1043,26 @@ module quadrature_derived_type
   private
   public :: quad_t
   public :: create_quad_ref_1D, create_quad_ref_2D
+  public :: quad_ptr_3D
   type quad_t
     integer :: n_quad = 0
     real(dp), allocatable, dimension(:,:) :: quad_pts
     real(dp), allocatable, dimension(:)   :: quad_wts
   contains
     private
-    procedure, public :: allocate_quad
-    procedure, public :: deallocate_quad
+    procedure, public, pass :: create  => allocate_quad
+    procedure, public, pass :: destroy => deallocate_quad
     generic,   public :: integrate => integrate_scalar, integrate_vector
     procedure :: integrate_scalar
     procedure :: integrate_vector
   end type quad_t
+
+  type quad_ptr_3D
+    type(quad_t), dimension(:,:,:), pointer :: p => null()
+    contains
+    private
+    procedure, public, pass :: destroy => destroy_ptr_3D
+  end type quad_ptr_3D
 
 contains
 
@@ -421,7 +1077,7 @@ contains
     this%quad_wts = zero
   end subroutine allocate_quad
 
-  subroutine deallocate_quad( this )
+  pure elemental subroutine deallocate_quad( this )
     class(quad_t), intent(inout) :: this
     this%n_quad = 0
     if( allocated( this%quad_wts  ) ) deallocate( this%quad_wts  )
@@ -483,10 +1139,9 @@ contains
     integer,                  intent(in)  :: N
     real(dp), dimension(N+1), intent(out) :: x, w
     integer :: j, k
-    integer,  parameter :: quad_n_iter = 20
-    real(dp), parameter :: eps4 = four*epsilon(one)
-    real(dp) :: delta, LNp1, dLNp1
-    
+    real(dp) :: eps4, delta, LNp1, dLNp1
+    integer, parameter :: quad_n_iter = 10
+    eps4 = four*epsilon(one)
     x = zero
     w = zero
 
@@ -536,8 +1191,8 @@ contains
     integer :: n_quad
     n_quad = gauss_1D_size( quad_order )
     allocate( xtmp(n_quad) )
-    call quad_ref%deallocate_quad()
-    call quad_ref%allocate_quad( n_quad )
+    call quad_ref%destroy()
+    call quad_ref%create( n_quad )
     call LegendreGaussNodesAndWeights( n_quad, xtmp, quad_ref%quad_wts )
     quad_ref%quad_pts(1,:) = xtmp
     deallocate( xtmp )
@@ -556,8 +1211,8 @@ contains
     allocate( pts_1D(n_quad) )
     allocate( wts_1D(n_quad) )
     call LegendreGaussNodesAndWeights(n_quad-1, pts_1D, wts_1D)
-    call quad_ref%deallocate_quad()
-    call quad_ref%allocate_quad( n_quad**2 )
+    call quad_ref%destroy()
+    call quad_ref%create( n_quad**2 )
     cnt = 0
     do j = 1, n_quad
       do i = 1, n_quad
@@ -569,7 +1224,320 @@ contains
     deallocate( wts_1D )
     deallocate( pts_1D )
   end subroutine create_quad_ref_2D
+
+  pure elemental subroutine destroy_ptr_3D( this )
+    class(quad_ptr_3D), intent(inout) :: this
+    this%p => null()
+  end subroutine destroy_ptr_3D
+
+  subroutine map_quad_ref_to_physical_1D_curv( x1nodes, x2nodes, x3nodes,      &
+                                               quad_ref, quad_physical )
+    use set_constants,           only : zero, half
+    use math,                    only : vector_norm
+    use lagrange_interpolation,  only : lagbary_wderiv
+
+    real(dp), dimension(:), intent(in)    :: x1nodes, x2nodes, x3nodes
+    type(quad_t),           intent(in)  :: quad_ref
+    type(quad_t),           intent(out) :: quad_physical
+    integer  :: n, i
+    integer, dimension(1) :: Npts
+    real(dp) :: det_jac
+    real(dp), dimension(3) :: node_diff
+
+    real(dp), dimension(3) :: tangent, normal, binormal
+    real(dp) :: kappa
+
+    continue
+    Npts = shape(x1nodes)
+
+    if( quad_ref%n_quad /= quad_physical%n_quad ) then
+      call quad_physical%destroy()
+      call quad_physical%create(quad_ref%n_quad)
+    end if
+
+    quad_physical%quad_pts = zero
+    do n = 1,quad_ref%n_quad
+      call lagbary_wderiv( quad_ref%quad_pts(1,n), 1, x1nodes, Npts, &
+                           quad_physical%quad_pts(1,n), node_diff(1) )
+      call lagbary_wderiv( quad_ref%quad_pts(1,n), 1, x2nodes, Npts, &
+                           quad_physical%quad_pts(2,n), node_diff(2) )
+      call lagbary_wderiv( quad_ref%quad_pts(1,n), 1, x3nodes, Npts, &
+                           quad_physical%quad_pts(3,n), node_diff(3) )
+      det_jac = vector_norm(node_diff)
+      quad_physical%quad_wts(n) = det_jac * quad_ref%quad_wts(n)
+
+    end do
+  end subroutine map_quad_ref_to_physical_1D_curv
+
+  subroutine map_quad_ref_to_physical_2D_curv( x1nodes, x2nodes, x3nodes,    &
+                                                  quad_ref, quad_physical )
+    use set_constants,           only : zero
+    use lagrange_interpolation,  only : lagbary_2D, jacobian_determinant
+
+    real(dp),     dimension(:,:), intent(in)  :: x1nodes, x2nodes, x3nodes
+    type(quad_t),                 intent(in)  :: quad_ref
+    type(quad_t),                 intent(out) :: quad_physical
+    integer  :: n
+    real(dp) :: det_jac
+    integer,      dimension(2) :: Npts
+    continue
+
+    Npts = shape(x1nodes)
+    if( quad_ref%n_quad /= quad_physical%n_quad ) then
+      call quad_physical%destroy()
+      call quad_physical%create(quad_ref%n_quad)
+    end if
+
+    quad_physical%quad_pts = zero
+    do n = 1,quad_ref%n_quad
+      call lagbary_2D( quad_ref%quad_pts(1:2,n), x1nodes, Npts, &
+                  quad_physical%quad_pts(  1,n) )
+      call lagbary_2D( quad_ref%quad_pts(1:2,n), x2nodes, Npts, &
+                  quad_physical%quad_pts(  2,n) )
+      call lagbary_2D( quad_ref%quad_pts(1:2,n), x3nodes, Npts, &
+                  quad_physical%quad_pts(  3,n) )
+      det_jac = jacobian_determinant( quad_ref%quad_pts(1:2,n), &
+                  x1nodes, x2nodes, x3nodes )
+      quad_physical%quad_wts(n) = abs(det_jac) * quad_ref%quad_wts(n)
+    end do
+  end subroutine map_quad_ref_to_physical_2D_curv
+
+  subroutine map_quad_ref_to_physical_3D_curv( x1nodes, x2nodes, x3nodes,    &
+                                                  quad_ref, quad_physical )
+    use set_constants,           only : zero
+    use lagrange_interpolation,  only : lagbary_3D, jacobian_determinant
+    real(dp), dimension(:,:,:), intent(in)  :: x1nodes, x2nodes, x3nodes
+    type(quad_t),               intent(in)  :: quad_ref
+    type(quad_t),               intent(out) :: quad_physical
+    integer  :: n
+    real(dp) :: det_jac
+    integer,  dimension(3) :: Npts
+    continue
+
+    Npts = shape(x1nodes)
+    if( quad_ref%n_quad /= quad_physical%n_quad ) then
+      call quad_physical%destroy()
+      call quad_physical%create(quad_ref%n_quad)
+    end if
+
+    quad_physical%quad_pts = zero
+    do n = 1,quad_ref%n_quad
+      call lagbary_3D( quad_ref%quad_pts(:,n), x1nodes, Npts, &
+                      quad_physical%quad_pts(  1,n) )
+      call lagbary_3D( quad_ref%quad_pts(:,n), x2nodes, Npts, &
+                      quad_physical%quad_pts(  2,n) )
+      call lagbary_3D( quad_ref%quad_pts(:,n), x3nodes, Npts, &
+                      quad_physical%quad_pts(  3,n) )
+      det_jac = jacobian_determinant( quad_ref%quad_pts(:,n), &
+                                      x1nodes, x2nodes, x3nodes )
+      quad_physical%quad_wts(n) = det_jac * quad_ref%quad_wts(n)
+    end do
+  end subroutine map_quad_ref_to_physical_3D_curv
 end module quadrature_derived_type
+
+module grid_derived_type
+  use set_precision,           only : dp
+  use quadrature_derived_type, only : quad_t, quad_ptr_3D
+  use vector_derived_type,     only : face_vec, face_vec_ptr_3D
+  use pointers,                only : array_ptr_3D_real, array_ptr_4D_real
+  implicit none
+  private
+  public :: derived_grid_vars
+  public :: grid_block
+  public :: grid_type
+  public :: deallocate_grid
+  public :: allocate_grid_block, deallocate_grid_block
+  public :: allocate_derived_grid, deallocate_derived_grid
+
+  type derived_grid_vars
+    real(dp),       allocatable, dimension(:,:,:,:) :: cell_c
+    real(dp),       allocatable, dimension(:,:,:)   :: volume
+    real(dp),       allocatable, dimension(:,:,:)   :: xi_area
+    real(dp),       allocatable, dimension(:,:,:)   :: eta_area
+    real(dp),       allocatable, dimension(:,:,:)   :: zeta_area
+    type(quad_t),   allocatable, dimension(:,:,:)   :: quad
+    type(quad_t),   allocatable, dimension(:,:,:)   :: xi_face_quad
+    type(quad_t),   allocatable, dimension(:,:,:)   :: eta_face_quad
+    type(quad_t),   allocatable, dimension(:,:,:)   :: zeta_face_quad
+    type(face_vec), allocatable, dimension(:,:,:)   :: xi_nv
+    type(face_vec), allocatable, dimension(:,:,:)   :: eta_nv
+    type(face_vec), allocatable, dimension(:,:,:)   :: zeta_nv
+    type(quad_ptr_3D),           dimension(3)       :: face_quads
+    type(face_vec_ptr_3D),       dimension(3)       :: normals
+    integer, dimension(:), pointer :: n_cells, n_ghost
+    integer,               pointer :: n_dim
+  contains
+    private
+    procedure, public, pass :: setup   =>   allocate_derived_grid
+    procedure, public, pass :: destroy => deallocate_derived_grid
+  end type derived_grid_vars
+
+  type :: grid_block
+    integer, dimension(3) :: n_nodes
+    integer, dimension(3) :: n_cells
+    integer, dimension(3) :: n_ghost
+    integer  :: n_dim
+    integer  :: total_cells
+    real(dp) :: total_volume
+    real(dp), allocatable, dimension(:,:,:,:) ::  node_coords
+    type(derived_grid_vars) :: grid_vars
+  contains
+    private
+    procedure, public, pass :: setup   =>   allocate_grid_block
+    procedure, public, pass :: destroy => deallocate_grid_block
+  end type grid_block
+
+  type grid_type
+    integer  :: n_blocks
+    integer  :: total_int_cells
+    real(dp) :: total_int_volume
+    type(grid_block), allocatable, dimension(:) :: gblock
+  contains
+    private
+    procedure, public, pass   :: setup => init_grid_type
+    procedure, public, pass :: destroy => deallocate_grid
+  end type grid_type
+
+contains
+
+  pure subroutine init_grid_type( this, n_blocks )
+    use set_constants, only : zero
+    class(grid_type), intent(inout) :: this
+    integer, intent(in) :: n_blocks
+
+    this%n_blocks = n_blocks
+    this%total_int_cells = 0
+    this%total_int_volume = zero
+    allocate( this%gblock(n_blocks) )
+  end subroutine init_grid_type
+
+  pure subroutine allocate_grid_block( this, n_dim, n_nodes, n_ghost )
+    use set_constants, only : zero
+    integer,               intent(in)  :: n_dim
+    integer, dimension(3), intent(in)  :: n_nodes, n_ghost
+    class(grid_block),     intent(inout) :: this
+    integer, dimension(3) :: lo, hi
+    this%n_dim   = n_dim
+    this%n_nodes = n_nodes
+    this%n_ghost = n_ghost
+    this%n_cells = 1; this%n_cells(1:n_dim) = n_nodes(1:n_dim) - 1
+    lo = 1; lo(1:n_dim) = 1 - n_ghost(1:n_dim)
+    hi = 1; hi(1:n_dim) = n_nodes(1:n_dim) + n_ghost(1:n_dim)
+    allocate( this%node_coords( n_dim, lo(1):hi(1), lo(2):hi(2), lo(3):hi(3) ) )
+    this%node_coords = zero
+    this%total_volume = zero
+    this%total_cells  = product(this%n_cells)
+  end subroutine allocate_grid_block
+
+  subroutine allocate_derived_grid( this, gblock )
+    use set_constants,  only : zero
+    class(derived_grid_vars), target, intent(inout)   :: this
+    class(grid_block),       target, intent(inout) :: gblock
+    integer, dimension(3) :: lo, hi
+    this%n_cells => gblock%n_cells
+    this%n_ghost => gblock%n_ghost
+    this%n_dim   => gblock%n_dim
+    lo = 1
+    lo(1:this%n_dim) = 1 - this%n_ghost(1:this%n_dim)
+    hi = 1
+    hi(1:this%n_dim) = this%n_cells(1:this%n_dim) + this%n_ghost(1:this%n_dim)
+    allocate( this%volume(    lo(1):hi(1), lo(2):hi(2), lo(3):hi(3) ) )
+    allocate( this%cell_c( 3, lo(1):hi(1), lo(2):hi(2), lo(3):hi(3) ) )
+    allocate( this%quad(      lo(1):hi(1), lo(2):hi(2), lo(3):hi(3) ) )
+    this%volume = zero
+    this%cell_c = zero
+
+    lo = 1
+    hi = 1
+    hi(1:this%n_dim) = this%n_cells(1:this%n_dim)
+    allocate( this%xi_area(   lo(1):hi(1)+1, lo(2):hi(2),   lo(3):hi(3)   ) )
+    allocate( this%eta_area(  lo(1):hi(1),   lo(2):hi(2)+1, lo(3):hi(3)   ) )
+    allocate( this%zeta_area( lo(1):hi(1),   lo(2):hi(2),   lo(3):hi(3)+1 ) )
+    allocate( this%xi_face_quad(   lo(1):hi(1)+1, lo(2):hi(2),   lo(3):hi(3)   ) )
+    allocate( this%eta_face_quad(  lo(1):hi(1),   lo(2):hi(2)+1, lo(3):hi(3)   ) )
+    allocate( this%zeta_face_quad( lo(1):hi(1),   lo(2):hi(2),   lo(3):hi(3)+1 ) )
+    allocate( this%xi_nv(   lo(1):hi(1)+1, lo(2):hi(2),   lo(3):hi(3)   ) )
+    allocate( this%eta_nv(  lo(1):hi(1),   lo(2):hi(2)+1, lo(3):hi(3)   ) )
+    allocate( this%zeta_nv( lo(1):hi(1),   lo(2):hi(2),   lo(3):hi(3)+1 ) )
+    this%xi_area   = zero
+    this%eta_area  = zero
+    this%zeta_area = zero
+    this%face_quads(1)%p => this%xi_face_quad
+    this%face_quads(2)%p => this%eta_face_quad
+    this%face_quads(3)%p => this%zeta_face_quad
+    this%normals(1)%p    => this%xi_nv
+    this%normals(2)%p    => this%eta_nv
+    this%normals(3)%p    => this%zeta_nv
+  end subroutine allocate_derived_grid
+
+  pure elemental subroutine deallocate_grid(this)
+    use set_constants, only : zero
+    class(grid_type), intent(inout) :: this
+    if ( allocated(this%gblock) ) then
+      call this%gblock%destroy()
+      deallocate( this%gblock)
+    end if
+    this%n_blocks = 0
+    this%total_int_cells = 0
+    this%total_int_volume = zero
+  end subroutine deallocate_grid
+
+  pure elemental subroutine deallocate_grid_block( this )
+    use set_constants, only : zero
+    class(grid_block), intent(inout) :: this
+    call this%grid_vars%destroy()
+    if (allocated( this%node_coords ) ) deallocate( this%node_coords )
+    this%total_volume = zero
+    this%total_cells  = 0
+    this%n_dim        = 0
+    this%n_nodes      = 0
+    this%n_cells      = 0
+  end subroutine deallocate_grid_block
+
+  pure elemental subroutine deallocate_derived_grid( this )
+    class(derived_grid_vars), intent(inout) :: this
+    call this%face_quads(1)%destroy()
+    call this%face_quads(2)%destroy()
+    call this%face_quads(3)%destroy()
+    call this%normals(1)%destroy()
+    call this%normals(2)%destroy()
+    call this%normals(3)%destroy()
+    if ( allocated(this%cell_c)    ) deallocate( this%cell_c    )
+    if ( allocated(this%volume)    ) deallocate( this%volume    )
+    if ( allocated(this%xi_area)   ) deallocate( this%xi_area   )
+    if ( allocated(this%eta_area)  ) deallocate( this%eta_area  )
+    if ( allocated(this%zeta_area) ) deallocate( this%zeta_area )
+    if ( allocated(this%quad) ) then
+      call this%quad%destroy()
+      deallocate( this%quad )
+    end if
+    if ( allocated(this%xi_face_quad) ) then
+      call this%xi_face_quad%destroy()
+      deallocate( this%xi_face_quad )
+    end if
+    if ( allocated(this%eta_face_quad) ) then
+      call this%eta_face_quad%destroy()
+      deallocate( this%eta_face_quad )
+    end if
+    if ( allocated(this%zeta_face_quad) ) then
+      call this%zeta_face_quad%destroy()
+      deallocate( this%zeta_face_quad )
+    end if
+    if ( allocated(this%xi_nv) ) then
+      call this%xi_nv%destroy()
+      deallocate(this%xi_nv)
+    end if
+    if ( allocated(this%eta_nv) ) then
+      call this%eta_nv%destroy()
+      deallocate(this%eta_nv)
+    end if
+    if ( allocated(this%zeta_nv) ) then
+      call this%zeta_nv%destroy()
+      deallocate(this%zeta_nv)
+    end if
+  end subroutine deallocate_derived_grid
+
+end module grid_derived_type
 
 module monomial_basis_derived_type
   implicit none
@@ -877,11 +1845,45 @@ module var_rec_derived_type
 
   end type var_rec_t
 
+  ! type :: reconstruction_holder
+  !   private
+  !   integer :: n_cells
+  !   type(var_rec_t), dimension(:), allocatable :: rec
+  ! contains
+  !   private
+  !   procedure, public, pass :: setup => setup_reconstruction_holder
+  !   procedure, public, pass :: destroy => destroy_reconstruction_holder
+  ! end type reconstruction_holder
+
   interface var_rec_t
     procedure constructor
   end interface var_rec_t
 
 contains
+
+! subroutine setup_reconstruction_holder( this, gblock )
+!   use grid_derived_type, only : grid_block
+!   use index_conversion,  only : local2global_ghost
+!   type(reconstruction_holder), intent(inout) :: this
+!   type(grid_block), intent(in) :: gblock
+
+!   integer :: i, j, k, cnt
+
+!   call this%destroy()
+!   this%n_cells = product( gblock%n_cells )
+!   allocate( this%rec( this%n_cells ) )
+!   cnt = 0
+!   do k = 1,gblock%n_cells(3)
+!     do j = 1,gblock%n_cells(2)
+!       do i = 1,gblock%n_cells(1)
+!         cnt = cnt + 1
+! associate( )
+
+! end associate
+!       end do
+!     end do
+!   end do
+! end subroutine setup_reconstruction_holder
 
 function constructor( self_block, self_idx, int_idx, bnd_idx, n_vars, mono_basis, quad, h_ref ) result(this)
   integer,                    intent(in) :: self_block, self_idx
@@ -923,7 +1925,7 @@ pure subroutine destroy_var_rec_t(this)
 end subroutine destroy_var_rec_t
 
 subroutine setup_reconstruction_interior_faces(this,nbors,fquads,term_start,term_end)
-  use combinatorics, only : mat_inv
+  use matrix_math, only : mat_inv
   class(var_rec_t),                             intent(inout) :: this
   class(var_rec_t), dimension(this%n_interior), intent(in)    :: nbors
   class(quad_t),    dimension(this%n_interior), intent(in)    :: fquads
@@ -1120,6 +2122,24 @@ end subroutine get_RHS_dirichlet
 
 end module var_rec_derived_type
 
+! module test_problem
+!   use set_precision, only : dp
+!   implicit none
+
+!   private
+
+!   public :: setup_grid_and_reconstruction
+
+!   subroutine setup_grid_and_reconstruction(grid,rec)
+!     use grid_derived_type, only : grid_type
+!     use linspace_helper,   only : unit_cartesian_mesh_cat
+
+!     type(grid_type), intent(out) :: grid
+
+!   end subroutine setup_grid_and_reconstruction
+
+! end module test_problem
+
 program main
   use set_precision, only : dp
   use set_constants, only : zero, one
@@ -1127,6 +2147,8 @@ program main
   use monomial_basis_derived_type, only : monomial_basis_t
   use var_rec_derived_type, only : var_rec_t
   use timer_derived_type, only : basic_timer_t
+
+  implicit none
 
   type(quad_t)    :: quad
   type(monomial_basis_t) :: mono_basis
@@ -1161,7 +2183,7 @@ program main
   write(*,*) 'Average Elapsed time: ', avg/real(N_repeat,dp)
 
   deallocate( int_idx, bnd_idx, h_ref )
-  call quad%deallocate_quad()
+  call quad%destroy()
   call rec%destroy()
 
 end program main
