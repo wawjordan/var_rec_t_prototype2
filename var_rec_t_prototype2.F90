@@ -24,230 +24,6 @@ module set_constants
   real(dp), parameter :: pi     = acos(-one)
 end module set_constants
 
-module matrix_math
-  implicit none
-  private
-  public :: LUdecomp, LUsolve
-  public :: mat_inv
-contains
-  !================================== LUdecomp =================================80
-!>
-!! LU decomposition, with pivoting, for a regular NxN dense array
-!<
-!=============================================================================80
-  subroutine LUdecomp( LU, P, A, m )
-    use set_precision, only : dp
-    use set_constants, only : zero, one
-    real(dp), dimension(m,m), intent(out) :: LU,P
-    real(dp), dimension(m,m), intent(in)  :: A
-    integer,                  intent(in)  :: m
-    real(dp), dimension(m) :: ctemp1, LUtemp
-    integer  :: col, row, maxi, ipr
-    real(dp) :: factor
-    LU = A
-    P = zero
-    do col = 1,m
-      P(col,col) = one
-    end do
-    do col = 1,m-1
-!row pivot
-      maxi=maxloc(abs(LU(col:m,col)),1)
-      ipr=maxi+col-1
-      if (ipr.ne.col) then
-        ctemp1 = LU(ipr,:)
-        LU(ipr,:) = LU(col,:)
-        LU(col,:) = ctemp1
-        ctemp1 = P(ipr,:)
-        P(ipr,:) = P(col,:)
-        P(col,:) = ctemp1
-      end if
-      if ( abs(LU(col,col)) > zero ) then
-        do row = col+1,m
-          factor = LU(row,col)/LU(col,col)
-          LUtemp(col+1:m) = LU(row,col+1:m) - factor*LU(col,col+1:m)
-          LU(row,col+1:m) = LUtemp(col+1:m)
-          LU(row,col) = factor
-        end do
-      end if
-    end do
-  end subroutine LUdecomp
-
-!================================== LUsolve ==================================80
-!>
-!! LU solve for a regular dense array
-!<
-!=============================================================================80
-  subroutine LUsolve( x, LU, P, bin, m )
-    use set_precision, only : dp
-    real(dp), dimension(m),   intent(out) :: x
-    real(dp), dimension(m,m), intent(in)  :: LU, P
-    real(dp), dimension(m),   intent(in)  :: bin
-    integer,                  intent(in)  :: m
-    integer :: i, row
-    real(dp), dimension(m) :: b, d
-! Permute b matrix
-    b = matmul(P,bin)
-! Forward substitution
-    d(1) = b(1)
-    do row = 2,m
-      d(row) = b(row) - sum( LU(row,1:row-1)*d(1:row-1) )
-    end do
-! Backward substitution
-    x(m) = d(m)/LU(m,m)
-    do i = 1,m-1
-      row = m-i
-      x(row) = ( d(row) - sum( LU(row,row+1:m)*x(row+1:m) ) ) / LU(row,row)
-    end do
-  end subroutine LUsolve
-
-!================================== mat_inv ==================================80
-!>
-!! Calculates the inverse of a general nxn matrix using LU decomposition
-!<
-!=============================================================================80
-  subroutine mat_inv( mat, inv, n )
-    use set_precision, only : dp
-    use set_constants, only : zero, one
-    integer,                  intent(in)  :: n
-    real(dp), dimension(n,n), intent(in)  :: mat
-    real(dp), dimension(n,n), intent(out) :: inv
-    integer                  :: i
-    real(dp), dimension(n)   :: b
-    real(dp), dimension(n,n) :: lu, p
-    call ludecomp( lu, p, mat, n )
-    inv = zero
-    do i = 1,n
-      b = zero
-      b(i) = one
-      call lusolve( inv(:,i), lu, p, b, n )
-    end do
-  end subroutine mat_inv
-
-end module matrix_math
-
-module index_conversion
-  implicit none
-  private
-  public :: global2local, global2local_bnd, global2local_ghost
-  public :: local2global, local2global_bnd, local2global_ghost
-contains
-  
-  pure function global2local(iG,nSub) result(iSub)
-    integer,               intent(in) :: iG
-    integer, dimension(:), intent(in) :: nSub
-    integer, dimension(size(nSub)) :: iSub
-    integer :: i, nDims, p, iGtmp, iTmp
-    nDims = size(nSub)
-    if (nDims==1) then
-      iSub(1) = iG
-      return
-    end if
-    p = product(nSub)
-    iGtmp = iG
-    do i = nDims,1,-1
-      p = p/nSub(i)
-      iTmp = mod(iGtmp-1,p) + 1
-      iSub(i) = (iGtmp-iTmp)/p + 1
-      iGtmp = iTmp
-    end do
-  end function global2local
-
-  pure function local2global(iSub,nSub) result(iG)
-    integer, dimension(:), intent(in) :: iSub, nSub
-    integer :: iG
-    integer :: nDims, p, i
-    nDims = size(iSub)
-    p = 1
-    iG = 1
-    do i = 1,nDims
-        iG = iG + ( iSub(i) - 1 )*p
-        p = p*nSub(i)
-    end do
-  end function local2global
-
-  pure function global2local_ghost(iG,nSub,nGhost) result(iSub)
-    integer,               intent(in) :: iG
-    integer, dimension(:), intent(in) :: nSub, nGhost
-    integer, dimension(size(nSub)) :: iSub, nSub2
-    nSub2 = nSub + 2*nGhost
-    iSub = global2local_safe(iG,nSub2)
-    iSub = iSub - nGhost
-  end function global2local_ghost
-
-  pure function local2global_ghost(iSub,nSub,nGhost) result(iG)
-    integer, dimension(:), intent(in) :: iSub, nSub, nGhost
-    integer, dimension(size(nSub)) :: iSub2, nSub2
-    integer :: iG
-    iSub2 = iSub + nGhost
-    nSub2 = nSub + 2*nGhost
-    iG = local2global(iSub2,nSub2)
-  end function local2global_ghost
-
-  pure function global2local_bnd(iG,lo,hi) result(iSub)
-    integer,               intent(in) :: iG
-    integer, dimension(:), intent(in) :: lo, hi
-    integer, dimension(size(lo)) :: iSub, nSub
-    nSub = hi - lo + 1
-    iSub = global2local(iG,nSub)
-    iSub = iSub + lo - 1
-  end function global2local_bnd
-
-  pure function local2global_bnd(iSub,lo,hi) result(iG)
-    integer, dimension(:), intent(in) :: iSub, lo, hi
-    integer, dimension(size(iSub)) :: idx, nSub
-    integer :: iG
-    idx  = iSub - lo + 1
-    nSub = hi - lo + 1
-    iG   = local2global(idx,nSub)
-  end function local2global_bnd
-
-end module index_conversion
-
-module combinatorics
-  implicit none
-  private
-  public :: nchoosek
-  public :: get_exponents
-contains
-
-  pure function nchoosek( n, k ) result( c )
-    integer, intent(in) :: n, k
-    integer             :: c
-    integer :: i
-    c = 0
-    if (k>n) return
-
-    c = 1
-    do i = 1, min(n-k,k)
-      c = c * ( n - (i-1) )
-      c = c / i
-    end do
-  end function nchoosek
-
-  pure subroutine get_exponents(n_dim,degree,n_terms,exponents,idx)
-    use index_conversion, only : global2local
-    integer, intent(in) :: n_dim, degree, n_terms
-    integer, dimension(n_dim,n_terms), intent(out) :: exponents
-    integer, dimension(degree+1),      intent(out) :: idx
-    integer :: curr_total_degree, j, cnt, N_full_terms
-    integer, dimension(n_dim) :: tmp_exp, nsub
-    cnt = 0
-    do curr_total_degree = 0,degree
-      idx(curr_total_degree+1) = cnt + 1
-      N_full_terms = (curr_total_degree+1) ** n_dim
-      do j = 0,N_full_terms
-        nSub = curr_total_degree + 1
-        tmp_exp = global2local(j+1,nsub)-1
-        if ( sum(tmp_exp) == curr_total_degree ) then
-          cnt = cnt + 1
-          exponents(:,cnt) = tmp_exp
-        end if
-      end do
-    end do
-  end subroutine get_exponents
-
-end module combinatorics
-
 module project_inputs
   implicit none
   private
@@ -394,6 +170,256 @@ end function get_time
   end function timer_tock
 
 end module timer_derived_type
+
+module index_conversion
+  implicit none
+  private
+  public :: global2local, global2local_bnd, global2local_ghost
+  public :: local2global, local2global_bnd, local2global_ghost
+contains
+  
+  pure function global2local(iG,nSub) result(iSub)
+    integer,               intent(in) :: iG
+    integer, dimension(:), intent(in) :: nSub
+    integer, dimension(size(nSub)) :: iSub
+    integer :: i, nDims, p, iGtmp, iTmp
+    nDims = size(nSub)
+    if (nDims==1) then
+      iSub(1) = iG
+      return
+    end if
+    p = product(nSub)
+    iGtmp = iG
+    do i = nDims,1,-1
+      p = p/nSub(i)
+      iTmp = mod(iGtmp-1,p) + 1
+      iSub(i) = (iGtmp-iTmp)/p + 1
+      iGtmp = iTmp
+    end do
+  end function global2local
+
+  pure function local2global(iSub,nSub) result(iG)
+    integer, dimension(:), intent(in) :: iSub, nSub
+    integer :: iG
+    integer :: nDims, p, i
+    nDims = size(iSub)
+    p = 1
+    iG = 1
+    do i = 1,nDims
+        iG = iG + ( iSub(i) - 1 )*p
+        p = p*nSub(i)
+    end do
+  end function local2global
+
+  pure function global2local_ghost(iG,nSub,nGhost) result(iSub)
+    integer,               intent(in) :: iG
+    integer, dimension(:), intent(in) :: nSub, nGhost
+    integer, dimension(size(nSub)) :: iSub, nSub2
+    nSub2 = nSub + 2*nGhost
+    iSub = global2local(iG,nSub2)
+    iSub = iSub - nGhost
+  end function global2local_ghost
+
+  pure function local2global_ghost(iSub,nSub,nGhost) result(iG)
+    integer, dimension(:), intent(in) :: iSub, nSub, nGhost
+    integer, dimension(size(nSub)) :: iSub2, nSub2
+    integer :: iG
+    iSub2 = iSub + nGhost
+    nSub2 = nSub + 2*nGhost
+    iG = local2global(iSub2,nSub2)
+  end function local2global_ghost
+
+  pure function global2local_bnd(iG,lo,hi) result(iSub)
+    integer,               intent(in) :: iG
+    integer, dimension(:), intent(in) :: lo, hi
+    integer, dimension(size(lo)) :: iSub, nSub
+    nSub = hi - lo + 1
+    iSub = global2local(iG,nSub)
+    iSub = iSub + lo - 1
+  end function global2local_bnd
+
+  pure function local2global_bnd(iSub,lo,hi) result(iG)
+    integer, dimension(:), intent(in) :: iSub, lo, hi
+    integer, dimension(size(iSub)) :: idx, nSub
+    integer :: iG
+    idx  = iSub - lo + 1
+    nSub = hi - lo + 1
+    iG   = local2global(idx,nSub)
+  end function local2global_bnd
+
+end module index_conversion
+
+module combinatorics
+  implicit none
+  private
+  public :: nchoosek
+  public :: get_exponents
+contains
+
+  pure function nchoosek( n, k ) result( c )
+    integer, intent(in) :: n, k
+    integer             :: c
+    integer :: i
+    c = 0
+    if (k>n) return
+
+    c = 1
+    do i = 1, min(n-k,k)
+      c = c * ( n - (i-1) )
+      c = c / i
+    end do
+  end function nchoosek
+
+  pure subroutine get_exponents(n_dim,degree,n_terms,exponents,idx)
+    use index_conversion, only : global2local
+    integer, intent(in) :: n_dim, degree, n_terms
+    integer, dimension(n_dim,n_terms), intent(out) :: exponents
+    integer, dimension(degree+1),      intent(out) :: idx
+    integer :: curr_total_degree, j, cnt, N_full_terms
+    integer, dimension(n_dim) :: tmp_exp, nsub
+    cnt = 0
+    do curr_total_degree = 0,degree
+      idx(curr_total_degree+1) = cnt + 1
+      N_full_terms = (curr_total_degree+1) ** n_dim
+      do j = 0,N_full_terms
+        nSub = curr_total_degree + 1
+        tmp_exp = global2local(j+1,nsub)-1
+        if ( sum(tmp_exp) == curr_total_degree ) then
+          cnt = cnt + 1
+          exponents(:,cnt) = tmp_exp
+        end if
+      end do
+    end do
+  end subroutine get_exponents
+
+end module combinatorics
+
+module math
+  use set_precision, only : dp
+  implicit none
+  private
+  public :: cross_product, vector_norm
+  public :: LUdecomp, LUsolve, mat_inv
+contains
+  pure function cross_product( vec1, vec2 )
+    real(dp), dimension(3), intent(in) :: vec1, vec2
+    real(dp), dimension(3)             :: cross_product
+    cross_product(1) =  ( vec1(2)*vec2(3) - vec1(3)*vec2(2) )
+    cross_product(2) = -( vec1(1)*vec2(3) - vec1(3)*vec2(1) )
+    cross_product(3) =  ( vec1(1)*vec2(2) - vec1(2)*vec2(1) )
+  end function cross_product
+
+  pure function vector_norm( vector )
+    use set_precision, only : dp
+    use set_constants, only : zero
+    real(dp), dimension(:), intent(in) :: vector
+    real(dp)                           :: vector_norm
+    integer :: i
+    vector_norm = zero
+    do i = 1, size(vector)
+      vector_norm = vector_norm + vector(i)**2
+    end do
+    vector_norm = sqrt( vector_norm )
+  end function vector_norm
+
+!================================== LUdecomp =================================80
+!>
+!! LU decomposition, with pivoting, for a regular NxN dense array
+!<
+!=============================================================================80
+  subroutine LUdecomp( LU, P, A, m )
+    use set_precision, only : dp
+    use set_constants, only : zero, one
+    real(dp), dimension(m,m), intent(out) :: LU,P
+    real(dp), dimension(m,m), intent(in)  :: A
+    integer,                  intent(in)  :: m
+    real(dp), dimension(m) :: ctemp1, LUtemp
+    integer  :: col, row, maxi, ipr
+    real(dp) :: factor
+    LU = A
+    P = zero
+    do col = 1,m
+      P(col,col) = one
+    end do
+    do col = 1,m-1
+!row pivot
+      maxi=maxloc(abs(LU(col:m,col)),1)
+      ipr=maxi+col-1
+      if (ipr.ne.col) then
+        ctemp1 = LU(ipr,:)
+        LU(ipr,:) = LU(col,:)
+        LU(col,:) = ctemp1
+        ctemp1 = P(ipr,:)
+        P(ipr,:) = P(col,:)
+        P(col,:) = ctemp1
+      end if
+      if ( abs(LU(col,col)) > zero ) then
+        do row = col+1,m
+          factor = LU(row,col)/LU(col,col)
+          LUtemp(col+1:m) = LU(row,col+1:m) - factor*LU(col,col+1:m)
+          LU(row,col+1:m) = LUtemp(col+1:m)
+          LU(row,col) = factor
+        end do
+      end if
+    end do
+  end subroutine LUdecomp
+
+!================================== LUsolve ==================================80
+!>
+!! LU solve for a regular dense array
+!<
+!=============================================================================80
+  subroutine LUsolve( x, LU, P, bin, m )
+    use set_precision, only : dp
+    real(dp), dimension(m),   intent(out) :: x
+    real(dp), dimension(m,m), intent(in)  :: LU, P
+    real(dp), dimension(m),   intent(in)  :: bin
+    integer,                  intent(in)  :: m
+    integer :: i, row
+    real(dp), dimension(m) :: b, d
+! Permute b matrix
+    b = matmul(P,bin)
+! Forward substitution
+    d(1) = b(1)
+    do row = 2,m
+      d(row) = b(row) - sum( LU(row,1:row-1)*d(1:row-1) )
+    end do
+! Backward substitution
+    x(m) = d(m)/LU(m,m)
+    do i = 1,m-1
+      row = m-i
+      x(row) = ( d(row) - sum( LU(row,row+1:m)*x(row+1:m) ) ) / LU(row,row)
+    end do
+  end subroutine LUsolve
+
+!================================== mat_inv ==================================80
+!>
+!! Calculates the inverse of a general nxn matrix using LU decomposition
+!<
+!=============================================================================80
+  subroutine mat_inv( mat, inv, n )
+    use set_precision, only : dp
+    use set_constants, only : zero, one
+    integer,                  intent(in)  :: n
+    real(dp), dimension(n,n), intent(in)  :: mat
+    real(dp), dimension(n,n), intent(out) :: inv
+    integer                  :: i
+    real(dp), dimension(n)   :: b
+    real(dp), dimension(n,n) :: lu, p
+    call ludecomp( lu, p, mat, n )
+    inv = zero
+    do i = 1,n
+      b = zero
+      b(i) = one
+      call lusolve( inv(:,i), lu, p, b, n )
+    end do
+  end subroutine mat_inv
+
+end module math
+
+
+
+
 
 module vector_derived_type
   use set_precision, only : dp
@@ -562,35 +588,6 @@ contains
   end subroutine meshgrid3
 
 end module linspace_helper
-
-module math
-  use set_precision, only : dp
-  implicit none
-  private
-  public :: cross_product, vector_norm
-contains
-  pure function cross_product( vec1, vec2 )
-    real(dp), dimension(3), intent(in) :: vec1, vec2
-    real(dp), dimension(3)             :: cross_product
-    cross_product(1) =  ( vec1(2)*vec2(3) - vec1(3)*vec2(2) )
-    cross_product(2) = -( vec1(1)*vec2(3) - vec1(3)*vec2(1) )
-    cross_product(3) =  ( vec1(1)*vec2(2) - vec1(2)*vec2(1) )
-  end function cross_product
-
-  pure function vector_norm( vector )
-    use set_precision, only : dp
-    use set_constants, only : zero
-    real(dp), dimension(:), intent(in) :: vector
-    real(dp)                           :: vector_norm
-    integer :: i
-    vector_norm = zero
-    do i = 1, size(vector)
-      vector_norm = vector_norm + vector(i)**2
-    end do
-    vector_norm = sqrt( vector_norm )
-  end function vector_norm
-
-end module math
 
 module lagrange_interpolation
   use set_precision, only : dp
@@ -1925,7 +1922,7 @@ pure subroutine destroy_var_rec_t(this)
 end subroutine destroy_var_rec_t
 
 subroutine setup_reconstruction_interior_faces(this,nbors,fquads,term_start,term_end)
-  use matrix_math, only : mat_inv
+  use math, only : mat_inv
   class(var_rec_t),                             intent(inout) :: this
   class(var_rec_t), dimension(this%n_interior), intent(in)    :: nbors
   class(quad_t),    dimension(this%n_interior), intent(in)    :: fquads
