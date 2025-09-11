@@ -391,7 +391,82 @@ module math
   public :: cross_product, vector_norm
   public :: LUdecomp, LUsolve, mat_inv
   public :: maximal_diameter, maximal_extents
+  public :: LegendrePolynomialAndDerivative, LegendreGaussNodesAndWeights
 contains
+
+    elemental subroutine LegendrePolynomialAndDerivative(N,x,LN,dLN)
+    use set_constants, only : zero, one, two
+    integer, intent(in) :: N
+    real(dp), intent(in) :: x
+    real(dp), intent(out) :: LN, dLN
+    real(dp) :: LNm2, LNm1, dLNm2, dLNm1
+    integer :: j
+    if (N == 0) then
+      LN = one
+      dLN = zero
+    elseif (N == 1) then
+      LN = x
+      dLN = one
+    else
+      LNm2 = one
+      LNm1 = x
+      dLNm2 = zero
+      dLNm1 = one
+      do j = 2,N
+        LN = real(2*j-1,dp)/real(j,dp) * x * LNm1 &
+          - real(j-1,dp)/real(j,dp) * LNm2
+        dLN = dLNm2 + real(2*j-1,dp) * LNm1
+        LNm2 = LNm1
+        LNm1 = LN
+        dLNm2 = dLNm1
+        dLNm1 = dLN
+      end do
+    end if
+  end subroutine LegendrePolynomialAndDerivative
+
+  pure subroutine LegendreGaussNodesAndWeights(N,x,w)
+    use set_constants, only : zero, one, two, four, third, pi
+    integer,                  intent(in)  :: N
+    real(dp), dimension(N+1), intent(out) :: x, w
+    integer :: j, k
+    real(dp) :: eps4, delta, LNp1, dLNp1
+    integer, parameter :: quad_n_iter = 10
+    eps4 = four*epsilon(one)
+    x = zero
+    w = zero
+
+    if (N == 0) then
+      x(1) = zero
+      w(1) = two
+    elseif (N == 1) then
+      x(1) = -sqrt(third)
+      w(1) = one
+      x(2) = -x(1)
+      w(2) = w(1)
+    else
+      do j = 0,(N+1)/2 - 1
+        x(j+1) = -cos( ( real(2*j+1,dp)/real(2*N+2,dp) )*pi )
+        do k = 1,quad_n_iter
+          call LegendrePolynomialAndDerivative(N+1,x(j+1),LNp1,dLNp1)
+          delta = -LNp1/dLNp1
+          x(j+1) = x(j+1) + delta
+          if ( abs(delta) <= eps4*abs(x(j+1)) ) then
+            exit
+          end if
+        end do
+        call LegendrePolynomialAndDerivative(N+1,x(j+1),LNp1,dLNp1)
+        x(N+1-j) = -x(j+1)
+        w(j+1) = two/( (one-x(j+1)**2)*dLNp1**2)
+        w(N+1-j) = w(j+1)
+      end do
+      if (mod(N,2) == 0) then
+        call LegendrePolynomialAndDerivative(N+1,zero,LNp1,dLNp1)
+        x(N/2+1) = zero
+        w(N/2+1) = two/dLNp1**2
+      end if
+    end if
+  end subroutine LegendreGaussNodesAndWeights
+
   pure function cross_product( vec1, vec2 )
     real(dp), dimension(3), intent(in) :: vec1, vec2
     real(dp), dimension(3)             :: cross_product
@@ -1155,8 +1230,11 @@ module quadrature_derived_type
   implicit none
   private
   public :: quad_t
-  public :: create_quad_ref_1D, create_quad_ref_2D
-  public :: quad_ptr_3D
+  public :: quad_ptr, quad_ptr_3D
+  public :: create_quad_ref_1D, create_quad_ref_2D, create_quad_ref_3D
+  public :: map_quad_ref_to_physical_1D
+  public :: map_quad_ref_to_physical_2D
+  public :: map_quad_ref_to_physical_3D
   type quad_t
     integer :: n_quad = 0
     real(dp), allocatable, dimension(:,:) :: quad_pts
@@ -1170,16 +1248,33 @@ module quadrature_derived_type
     procedure :: integrate_vector
   end type quad_t
 
+  type quad_ptr
+    type(quad_t), pointer :: p => null()
+  contains
+    private
+    procedure, public, pass :: destroy => destroy_quad_ptr
+  end type quad_ptr
+
   type quad_ptr_3D
     type(quad_t), dimension(:,:,:), pointer :: p => null()
-    contains
+  contains
     private
-    procedure, public, pass :: destroy => destroy_ptr_3D
+    procedure, public, pass :: destroy => destroy_quad_ptr_3D
   end type quad_ptr_3D
 
 contains
 
-  subroutine allocate_quad( this, n_quad )
+  pure elemental subroutine destroy_quad_ptr_3D( this )
+    class(quad_ptr_3D), intent(inout) :: this
+    this%p => null()
+  end subroutine destroy_quad_ptr_3D
+
+  pure elemental subroutine destroy_quad_ptr( this )
+    class(quad_ptr), intent(inout) :: this
+    this%p => null()
+  end subroutine destroy_quad_ptr
+
+  pure elemental subroutine allocate_quad( this, n_quad )
     use set_constants, only : zero
     class(quad_t), intent(inout) :: this
     integer,       intent(in)    :: n_quad
@@ -1217,113 +1312,43 @@ contains
     end do
   end function integrate_vector
 
-  elemental subroutine LegendrePolynomialAndDerivative(N,x,LN,dLN)
-    use set_constants, only : one, two
-    integer, intent(in) :: N
-    real(dp), intent(in) :: x
-    real(dp), intent(out) :: LN, dLN
-    real(dp) :: LNm2, LNm1, dLNm2, dLNm1
-    integer :: j
-    if (N == 0) then
-      LN = one
-      dLN = zero
-    elseif (N == 1) then
-      LN = x
-      dLN = one
-    else
-      LNm2 = one
-      LNm1 = x
-      dLNm2 = zero
-      dLNm1 = one
-      do j = 2,N
-        LN = real(2*j-1,dp)/real(j,dp) * x * LNm1 &
-          - real(j-1,dp)/real(j,dp) * LNm2
-        dLN = dLNm2 + real(2*j-1,dp) * LNm1
-        LNm2 = LNm1
-        LNm1 = LN
-        dLNm2 = dLNm1
-        dLNm1 = dLN
-      end do
-    end if
-  end subroutine LegendrePolynomialAndDerivative
-
-  pure subroutine LegendreGaussNodesAndWeights(N,x,w)
-    use set_constants, only : one, two, four, third, pi
-    integer,                  intent(in)  :: N
-    real(dp), dimension(N+1), intent(out) :: x, w
-    integer :: j, k
-    real(dp) :: eps4, delta, LNp1, dLNp1
-    integer, parameter :: quad_n_iter = 10
-    eps4 = four*epsilon(one)
-    x = zero
-    w = zero
-
-    if (N == 0) then
-      x(1) = zero
-      w(1) = two
-    elseif (N == 1) then
-      x(1) = -sqrt(third)
-      w(1) = one
-      x(2) = -x(1)
-      w(2) = w(1)
-    else
-      do j = 0,(N+1)/2 - 1
-        x(j+1) = -cos( ( real(2*j+1,dp)/real(2*N+2,dp) )*pi )
-        do k = 1,quad_n_iter
-          call LegendrePolynomialAndDerivative(N+1,x(j+1),LNp1,dLNp1)
-          delta = -LNp1/dLNp1
-          x(j+1) = x(j+1) + delta
-          if ( abs(delta) <= eps4*abs(x(j+1)) ) then
-            exit
-          end if
-        end do
-        call LegendrePolynomialAndDerivative(N+1,x(j+1),LNp1,dLNp1)
-        x(N+1-j) = -x(j+1)
-        w(j+1) = two/( (one-x(j+1)**2)*dLNp1**2)
-        w(N+1-j) = w(j+1)
-      end do
-      if (mod(N,2) == 0) then
-        call LegendrePolynomialAndDerivative(N+1,zero,LNp1,dLNp1)
-        x(N/2+1) = zero
-        w(N/2+1) = two/dLNp1**2
-      end if
-    end if
-  end subroutine LegendreGaussNodesAndWeights
-
-  function gauss_1D_size( polynomial_order ) result( N_quad )
+  pure function gauss_1D_size( polynomial_order ) result( N_quad )
     use set_constants, only : half
     integer, intent(in) :: polynomial_order
     integer             :: N_quad
     N_quad = ceiling( half*(polynomial_order + 1) )
   end function gauss_1D_size
 
-  subroutine create_quad_ref_1D( quad_order, quad_ref )
+  pure subroutine gauss_1D( n_quad, pts_1D, wts_1D )
+    use math, only : LegendreGaussNodesAndWeights
+    integer,                       intent(in)  :: n_quad
+    real(dp), dimension( n_quad ), intent(out) :: pts_1D
+    real(dp), dimension( n_quad ), intent(out) :: wts_1D
+    call LegendreGaussNodesAndWeights(n_quad-1, pts_1D, wts_1D)
+  end subroutine gauss_1D
+
+  pure subroutine create_quad_ref_1D( quad_order, quad_ref )
     integer,      intent(in)  :: quad_order
     type(quad_t), intent(out) :: quad_ref
-    real(dp), dimension(:), allocatable :: xtmp
+    real(dp), dimension( gauss_1D_size( quad_order ) ) :: xtmp
     integer :: n_quad
     n_quad = gauss_1D_size( quad_order )
-    allocate( xtmp(n_quad) )
     call quad_ref%destroy()
     call quad_ref%create( n_quad )
-    call LegendreGaussNodesAndWeights( n_quad, xtmp, quad_ref%quad_wts )
+    call gauss_1D( n_quad, xtmp, quad_ref%quad_wts )
     quad_ref%quad_pts(1,:) = xtmp
-    deallocate( xtmp )
   end subroutine create_quad_ref_1D
 
-  subroutine create_quad_ref_2D( quad_order, quad_ref )
-    use set_constants,           only : zero
+  pure subroutine create_quad_ref_2D( quad_order, quad_ref )
+    use set_constants, only : zero
     integer,      intent(in)  :: quad_order
     type(quad_t), intent(out) :: quad_ref
     integer :: n_quad
     integer :: i, j, cnt
-    real(dp), dimension(:), allocatable :: pts_1D
-    real(dp), dimension(:), allocatable :: wts_1D
-    continue
+    real(dp), dimension( gauss_1D_size( quad_order ) ) :: pts_1D
+    real(dp), dimension( gauss_1D_size( quad_order ) ) :: wts_1D
     n_quad = gauss_1D_size( quad_order )
-    allocate( pts_1D(n_quad) )
-    allocate( wts_1D(n_quad) )
-    call LegendreGaussNodesAndWeights(n_quad-1, pts_1D, wts_1D)
+    call gauss_1D(n_quad, pts_1D, wts_1D)
     call quad_ref%destroy()
     call quad_ref%create( n_quad**2 )
     cnt = 0
@@ -1334,16 +1359,32 @@ contains
         quad_ref%quad_wts(cnt) = wts_1D(i)*wts_1D(j)
       end do
     end do
-    deallocate( wts_1D )
-    deallocate( pts_1D )
   end subroutine create_quad_ref_2D
 
-  pure elemental subroutine destroy_ptr_3D( this )
-    class(quad_ptr_3D), intent(inout) :: this
-    this%p => null()
-  end subroutine destroy_ptr_3D
+  pure subroutine create_quad_ref_3D( quad_order, quad_ref )
+    integer,      intent(in)  :: quad_order
+    type(quad_t), intent(out) :: quad_ref
+    integer :: n_quad
+    integer :: i, j, k, cnt
+    real(dp), dimension( gauss_1D_size( quad_order ) ) :: pts_1D
+    real(dp), dimension( gauss_1D_size( quad_order ) ) :: wts_1D
+    n_quad = gauss_1D_size( quad_order )
+    call gauss_1D(n_quad, pts_1D, wts_1D)
+    call quad_ref%destroy()
+    call quad_ref%create( n_quad**3 )
+    cnt = 0
+    do k = 1, n_quad
+      do j = 1, n_quad
+        do i = 1, n_quad
+          cnt = cnt + 1
+          quad_ref%quad_pts(:,cnt) = [ pts_1D(i), pts_1D(j), pts_1D(k) ]
+          quad_ref%quad_wts(cnt) = wts_1D(i)*wts_1D(j)*wts_1D(k)
+        end do
+      end do
+    end do
+  end subroutine create_quad_ref_3D
 
-  subroutine map_quad_ref_to_physical_1D_curv( x1nodes, x2nodes, x3nodes,      &
+  pure subroutine map_quad_ref_to_physical_1D( x1nodes, x2nodes, x3nodes,      &
                                                quad_ref, quad_physical )
     use set_constants,           only : zero, half
     use math,                    only : vector_norm
@@ -1380,9 +1421,9 @@ contains
       quad_physical%quad_wts(n) = det_jac * quad_ref%quad_wts(n)
 
     end do
-  end subroutine map_quad_ref_to_physical_1D_curv
+  end subroutine map_quad_ref_to_physical_1D
 
-  subroutine map_quad_ref_to_physical_2D_curv( x1nodes, x2nodes, x3nodes,    &
+  pure subroutine map_quad_ref_to_physical_2D( x1nodes, x2nodes, x3nodes,    &
                                                   quad_ref, quad_physical )
     use set_constants,           only : zero
     use lagrange_interpolation,  only : lagbary_2D, jacobian_determinant
@@ -1413,9 +1454,9 @@ contains
                   x1nodes, x2nodes, x3nodes )
       quad_physical%quad_wts(n) = abs(det_jac) * quad_ref%quad_wts(n)
     end do
-  end subroutine map_quad_ref_to_physical_2D_curv
+  end subroutine map_quad_ref_to_physical_2D
 
-  subroutine map_quad_ref_to_physical_3D_curv( x1nodes, x2nodes, x3nodes,    &
+  pure subroutine map_quad_ref_to_physical_3D( x1nodes, x2nodes, x3nodes,    &
                                                   quad_ref, quad_physical )
     use set_constants,           only : zero
     use lagrange_interpolation,  only : lagbary_3D, jacobian_determinant
@@ -1445,7 +1486,7 @@ contains
                                       x1nodes, x2nodes, x3nodes )
       quad_physical%quad_wts(n) = det_jac * quad_ref%quad_wts(n)
     end do
-  end subroutine map_quad_ref_to_physical_3D_curv
+  end subroutine map_quad_ref_to_physical_3D
 end module quadrature_derived_type
 
 module grid_derived_type
@@ -1463,6 +1504,7 @@ module grid_derived_type
   public :: allocate_derived_grid, deallocate_derived_grid
 
   public :: pack_cell_node_coords
+  public :: get_face_quad_ptrs
 
   type derived_grid_vars
     real(dp),       allocatable, dimension(:,:,:,:) :: cell_c
@@ -1520,7 +1562,7 @@ contains
     real(dp), dimension( 3, bnd_min(1):bnd_max(1), &
                             bnd_min(2):bnd_max(2), &
                             bnd_min(3):bnd_max(3) ), intent(in)  :: coords_in
-    real(dp), dimension(3,6)                                     :: coords_out
+    real(dp), dimension(3,8)                                     :: coords_out
     integer :: i,j,k,cnt
     cnt = 0
     do k = idx(3),idx(3)+1
@@ -1532,6 +1574,47 @@ contains
       end do
     end do
   end function pack_cell_node_coords
+
+  function cell_node_coords(idx,stride,bnd_min,bnd_max,coords_in) result(coords_out)
+    integer, dimension(3),                            intent(in)  :: idx, stride, bnd_min, bnd_max
+    real(dp), dimension( 3, bnd_min(1):bnd_max(1), &
+                            bnd_min(2):bnd_max(2), &
+                            bnd_min(3):bnd_max(3) ), intent(in)  :: coords_in
+    real(dp), dimension(stride(1)+1,stride(2)+1,stride(3)+1,3)   :: coords_out
+    integer :: i,j,k,ii,jj,kk
+    kk = 0
+    do k = idx(3),idx(3)+stride(3)
+      kk = kk + 1
+      jj = 0
+      do j = idx(2),idx(2)+stride(2)
+        jj = jj + 1
+        ii = 0
+        do i = idx(1),idx(1)+stride(1)
+          ii = ii + 1
+          coords_out(ii,jj,kk,1) = coords_in(1,i,j,k)
+          coords_out(ii,jj,kk,2) = coords_in(2,i,j,k)
+          coords_out(ii,jj,kk,3) = coords_in(3,i,j,k)
+        end do
+      end do
+    end do
+    write(*,*) idx
+  end function cell_node_coords
+  
+  subroutine get_face_quad_ptrs(gblock,cell_idx,face_ids,fquad)
+    use quadrature_derived_type, only : quad_ptr
+    use index_conversion,        only : get_face_idx_from_id
+    type(grid_block), target,                  intent(in)  :: gblock
+    integer,        dimension(3),              intent(in)  :: cell_idx
+    integer,        dimension(:),              intent(in)  :: face_ids
+    type(quad_ptr), dimension(size(face_ids)), intent(out) :: fquad
+    integer :: i, dir
+    integer, dimension(3) :: face_idx
+    call fquad%destroy()
+    do i = 1,size(face_ids)
+      call get_face_idx_from_id(cell_idx,face_ids(i),dir,face_idx)
+      fquad(i)%p => gblock%grid_vars%face_quads(3)%p(face_idx(1),face_idx(2),face_idx(3))
+    end do
+  end subroutine get_face_quad_ptrs
 
   pure subroutine init_grid_type( this, n_blocks )
     use set_constants, only : zero
@@ -1595,6 +1678,9 @@ contains
     this%xi_area   = zero
     this%eta_area  = zero
     this%zeta_area = zero
+
+    call compute_quadrature_points( gblock, gblock, [1,1,1], 2 )
+
     this%face_quads(1)%p => this%xi_face_quad
     this%face_quads(2)%p => this%eta_face_quad
     this%face_quads(3)%p => this%zeta_face_quad
@@ -1602,6 +1688,181 @@ contains
     this%normals(2)%p    => this%eta_nv
     this%normals(3)%p    => this%zeta_nv
   end subroutine allocate_derived_grid
+
+  pure subroutine map_cell_quad_points( dim, n_skip, quad_order, coords, mask, ref_quads, quad )
+    use quadrature_derived_type, only : map_quad_ref_to_physical_1D,           &
+                                        map_quad_ref_to_physical_2D,           &
+                                        map_quad_ref_to_physical_3D
+    integer,                                                        intent(in)    :: quad_order, dim
+    integer,      dimension(3),                                     intent(in)    :: n_skip
+    real(dp),     dimension(n_skip(1)+1,n_skip(1)+1,n_skip(1)+1,3), intent(in)    :: coords
+    logical,      dimension(n_skip(1)+1,n_skip(1)+1,n_skip(1)+1),   intent(in)    :: mask
+    type(quad_t), dimension(3),                                     intent(in)    :: ref_quads
+    type(quad_t),                                                   intent(inout) :: quad
+    real(dp),     dimension(product(n_skip+1)) :: Xtmp, Ytmp, Ztmp
+    integer :: n_mask, n_quad
+
+    n_mask = count(mask)
+
+    n_quad = ref_quads(1)%n_quad
+
+    Xtmp(1:n_mask) = pack(coords(:,:,:,1),mask)
+    Ytmp(1:n_mask) = pack(coords(:,:,:,2),mask)
+    Ztmp(1:n_mask) = pack(coords(:,:,:,3),mask)
+
+    select case(dim)
+    case(1)
+      call map_quad_ref_to_physical_1D( Xtmp(1:n_mask), &
+                                        Ytmp(1:n_mask), &
+                                        Ztmp(1:n_mask), &
+                                        ref_quads(1), quad )
+    case(2)
+      call map_quad_ref_to_physical_2D( reshape( Xtmp(1:n_mask), [n_quad, n_quad ] ), &
+                                        reshape( Ytmp(1:n_mask), [n_quad, n_quad ] ), &
+                                        reshape( Ztmp(1:n_mask), [n_quad, n_quad ] ), &
+                                        ref_quads(2), quad )
+    case(3)
+      call map_quad_ref_to_physical_3D( reshape( Xtmp(1:n_mask), [n_quad, n_quad, n_quad ] ), &
+                                        reshape( Ytmp(1:n_mask), [n_quad, n_quad, n_quad ] ), &
+                                        reshape( Ztmp(1:n_mask), [n_quad, n_quad, n_quad ] ), &
+                                        ref_quads(3), quad )
+    end select
+  end subroutine map_cell_quad_points
+
+
+  subroutine compute_quadrature_points( gblock1, gblock, n_skip, quad_order )
+    use quadrature_derived_type, only : create_quad_ref_1D,                    &
+                                        create_quad_ref_2D,                    &
+                                        create_quad_ref_3D
+    class(grid_block),     intent(in)    :: gblock1
+    class(grid_block),     intent(inout) :: gblock
+    integer, dimension(3), intent(in)    :: n_skip
+    integer,               intent(in)    :: quad_order
+    type(quad_t), dimension(3) :: ref_quads
+    logical,  dimension(n_skip(1)+1,n_skip(1)+1,n_skip(1)+1)   :: mask1, mask2, mask
+    real(dp), dimension(n_skip(1)+1,n_skip(1)+1,n_skip(1)+1,3) :: coords_tmp
+    integer :: i, j, k
+    integer, dimension(3) :: idx, bnd_min, bnd_max, sz
+
+    sz = n_skip + 1
+    
+    call create_quad_ref_1D( quad_order, ref_quads(1) )
+    call create_quad_ref_2D( quad_order, ref_quads(2) )
+    call create_quad_ref_3D( quad_order, ref_quads(3) )
+
+    bnd_min = [ lbound(gblock1%node_coords,2), lbound(gblock1%node_coords,3), lbound(gblock1%node_coords,4) ]
+    bnd_max = [ ubound(gblock1%node_coords,2), ubound(gblock1%node_coords,3), ubound(gblock1%node_coords,4) ]
+    ! first the volume quads
+    mask = .false.
+    select case( gblock%n_dim )
+    case(1)
+      mask(:,1,1) = .true.
+    case(2)
+      mask(:,:,1) = .true.
+    case(3)
+      mask(:,:,:) = .true.
+    end select
+    do k = 1,gblock%n_cells(3)
+      do j = 1,gblock%n_cells(2)
+        do i = 1,gblock%n_cells(1)
+          idx = [i,j,k]
+          coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
+          call map_cell_quad_points( gblock%n_dim, n_skip, quad_order, coords_tmp, mask, ref_quads, gblock%grid_vars%quad(i,j,k) )
+          gblock%grid_vars%volume = sum( gblock%grid_vars%quad(i,j,k)%quad_wts )
+        end do
+      end do
+    end do
+
+    if ( gblock%n_dim == 1) return
+    ! now the face quads
+
+    ! xi-faces
+    mask1 = .false.
+    mask2 = .false.
+    select case( gblock%n_dim )
+    case(2)
+      mask1(1,:,1) = .true.
+      mask2(sz(1),:,1) = .true.
+    case(3)
+      mask1(1,:,:) = .true.
+      mask2(sz(1),:,:) = .true.
+    end select
+    do k = 1,gblock%n_cells(3)
+      do j = 1,gblock%n_cells(2)
+        do i = 1,1
+          idx = [i,j,k]
+          coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
+          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask1, ref_quads, gblock%grid_vars%xi_face_quad(i,j,k) )
+          gblock%grid_vars%xi_area = sum( gblock%grid_vars%xi_face_quad(i,j,k)%quad_wts )
+        end do
+        do i = 1,gblock%n_cells(1)
+          idx = [i,j,k]
+          coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
+          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask2, ref_quads, gblock%grid_vars%xi_face_quad(i,j,k) )
+          gblock%grid_vars%xi_area = sum( gblock%grid_vars%xi_face_quad(i,j,k)%quad_wts )
+        end do
+      end do
+    end do
+
+    ! eta-faces
+    mask1 = .false.
+    mask2 = .false.
+    select case( gblock%n_dim )
+    case(2)
+      mask1(:,1,1) = .true.
+      mask2(:,sz(2),1) = .true.
+    case(3)
+      mask1(:,1,:) = .true.
+      mask2(:,sz(2),:) = .true.
+    end select
+    do k = 1,gblock%n_cells(3)
+      do j = 1,1
+        do i = 1,gblock%n_cells(1)
+          idx = [i,j,k]
+          coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
+          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask1, ref_quads, gblock%grid_vars%eta_face_quad(i,j,k) )
+          gblock%grid_vars%eta_area = sum( gblock%grid_vars%eta_face_quad(i,j,k)%quad_wts )
+        end do
+      end do
+      do j = 1,gblock%n_cells(2)
+        do i = 1,gblock%n_cells(1)
+          idx = [i,j,k]
+          coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
+          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask2, ref_quads, gblock%grid_vars%eta_face_quad(i,j,k) )
+          gblock%grid_vars%eta_area = sum( gblock%grid_vars%eta_face_quad(i,j,k)%quad_wts )
+        end do
+      end do
+    end do
+
+    if ( gblock%n_dim == 2) return
+
+    ! zeta-faces
+    mask1 = .false.; mask1(:,:,1) = .true.
+    mask2 = .false.; mask2(:,:,sz(3)) = .true.
+    do k = 1,1
+      do j = 1,gblock%n_cells(2)
+        do i = 1,gblock%n_cells(1)
+          idx = [i,j,k]
+          coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
+          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask1, ref_quads, gblock%grid_vars%zeta_face_quad(i,j,k) )
+          gblock%grid_vars%zeta_area = sum( gblock%grid_vars%zeta_face_quad(i,j,k)%quad_wts )
+        end do
+      end do
+    end do
+    do k = 1,gblock%n_cells(3)
+      do j = 1,gblock%n_cells(2)
+        do i = 1,gblock%n_cells(1)
+          idx = [i,j,k]
+          coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
+          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask2, ref_quads, gblock%grid_vars%zeta_face_quad(i,j,k) )
+          gblock%grid_vars%zeta_area = sum( gblock%grid_vars%zeta_face_quad(i,j,k)%quad_wts )
+        end do
+      end do
+    end do
+
+    call ref_quads%destroy()
+
+  end subroutine compute_quadrature_points
 
   pure elemental subroutine deallocate_grid(this)
     use set_constants, only : zero
@@ -1714,6 +1975,7 @@ contains
   pure subroutine destroy_monomial_basis_t(this)
     class(monomial_basis_t), intent(inout) :: this
     if ( allocated(this%exponents) ) deallocate( this%exponents )
+    if ( allocated(this%idx) )       deallocate( this%idx )
   end subroutine destroy_monomial_basis_t
 
   pure subroutine evaluate_monomial(this,term,x,val,coef)
@@ -1924,12 +2186,14 @@ pure function scaled_basis_derivative( this, term_idx, diff_idx, point, scale ) 
 end function scaled_basis_derivative
 
 pure function scaled_basis_derivatives( this, term_start, term_end, point, scale ) result(derivatives)
+  use set_constants, only : zero
   class(zero_mean_basis_t),        intent(in) :: this
   integer,                         intent(in) :: term_start, term_end
   real(dp), dimension(this%n_dim), intent(in) :: point
   real(dp), dimension(this%n_dim), intent(in) :: scale
   real(dp), dimension(term_end, term_end - term_start) :: derivatives
   integer :: i, j
+  derivatives = zero
   ! outer loop over basis functions
   do j = term_start+1,term_end
     ! inner loop over derivatives
@@ -1945,10 +2209,10 @@ module var_rec_derived_type
   use set_precision,                only : dp
   use monomial_basis_derived_type,  only : monomial_basis_t
   use zero_mean_basis_derived_type, only : zero_mean_basis_t
-  use quadrature_derived_type,      only : quad_t
+  use quadrature_derived_type,      only : quad_t, quad_ptr
   implicit none
   private
-  public :: var_rec_t
+  public :: var_rec_t, reconstruction_holder
   type :: var_rec_t
     private
     integer :: n_vars
@@ -1998,17 +2262,19 @@ contains
 
 subroutine setup_reconstruction_holder( this, block_num, degree, n_vars, gblock )
   use math, only : maximal_extents
-  use grid_derived_type, only : grid_block, pack_cell_node_coords
-  use index_conversion,  only : local2global_ghost, global2local_ghost, cell_face_nbors
+  use combinatorics, only : nchoosek
+  use quadrature_derived_type, only : quad_ptr
+  use grid_derived_type, only : grid_block, pack_cell_node_coords, get_face_quad_ptrs
+  use index_conversion,  only : local2global_ghost, global2local_ghost, cell_face_nbors, get_face_idx_from_id
   class(reconstruction_holder), intent(inout) :: this
   integer,                     intent(in)    :: block_num, degree, n_vars
   type(grid_block),            intent(in)    :: gblock
-  ! type(quad_t), dimension(6), pointer :: fquad => null()
+  type(quad_ptr), dimension(6) :: face_quads
   real(dp), dimension(gblock%n_dim) :: h_ref
-  real(dp), dimension(3,6) :: nodes
-  integer, dimension(3) :: lo, hi, bnd_min, bnd_max, tmp_idx, tmp_nbor_idx
+  real(dp), dimension(3,8) :: nodes
+  integer, dimension(3) :: lo, hi, bnd_min, bnd_max, face_idx
   integer, dimension(2*gblock%n_dim) :: nbor_cell_idx, nbor_face_id
-  integer :: i, j, k, cnt, n_int, n_ext, face_idx
+  integer :: i, j, k, cnt, n_int, dir, term_start, term_end
 
   call this%destroy()
   this%degree         = degree
@@ -2025,7 +2291,7 @@ subroutine setup_reconstruction_holder( this, block_num, degree, n_vars, gblock 
       do i = 1,gblock%n_cells(1)
         cnt = cnt + 1
         nodes = pack_cell_node_coords( [i,j,k],lo,hi,gblock%node_coords)
-        h_ref = maximal_extents( gblock%n_dim, 6, nodes(1:gblock%n_dim,:) )
+        h_ref = maximal_extents( gblock%n_dim, 8, nodes(1:gblock%n_dim,:) )
         call cell_face_nbors( gblock%n_dim, cnt, bnd_min(1:gblock%n_dim), &
                               bnd_max(1:gblock%n_dim), nbor_cell_idx, nbor_face_id, n_int )
         this%rec(cnt) = var_rec_t(block_num, cnt, n_int, nbor_cell_idx, nbor_face_id, n_vars, this%monomial_basis, gblock%grid_vars%quad(i,j,k), h_ref)
@@ -2033,29 +2299,22 @@ subroutine setup_reconstruction_holder( this, block_num, degree, n_vars, gblock 
     end do
   end do
 
+  term_start = 2
+  term_end   = this%monomial_basis%n_terms
+
+  cnt = 0
   do k = 1,gblock%n_cells(3)
     do j = 1,gblock%n_cells(2)
       do i = 1,gblock%n_cells(1)
         cnt = cnt + 1
-        
-        call this%rec(cnt)%setup( this%rec(cnt)% )
+        n_int = this%rec(cnt)%n_interior
+        call get_face_quad_ptrs( gblock,[i,j,k],this%rec(cnt)%face_id(1:n_int),face_quads(1:n_int) )
+        call this%rec(cnt)%setup( this%rec( this%rec(cnt)%nbor_idx(1:n_int) ), face_quads(1:n_int), term_start, term_end )
+        call face_quads%destroy()
       end do
     end do
   end do
 
-  ! ! subroutine setup_reconstruction( this, nbors, fquads, term_start, term_end )
-  ! do k = 1,this%n_cells
-  !   tmp_idx = global2local_ghost(k,gblock%n_cells,gblock%n_ghost)
-  !   do j = 1,this%rec(k)%n_interior
-      
-  !     face_idx = 
-      
-  !     if ( associated(fquad(j)) ) nullify(fquad(j))
-  !     fquad(j) => 
-  !   end do
-  !   ! fquad= gblock%grid_vars%face_quads()%p(:,:,:)
-  !   ! call this%rec(k)%setup( this%rec( this%rec(k)%int_idx ), )
-  ! end do
 end subroutine setup_reconstruction_holder
 
 pure elemental subroutine destroy_reconstruction_holder( this )
@@ -2070,6 +2329,7 @@ pure elemental subroutine destroy_reconstruction_holder( this )
 end subroutine destroy_reconstruction_holder
 
 function constructor( self_block, self_idx, n_interior, nbor_idx, face_id, n_vars, mono_basis, quad, h_ref ) result(this)
+  use set_constants, only : zero
   integer,                    intent(in) :: self_block, self_idx, n_interior
   integer, dimension(:),      intent(in) :: nbor_idx, face_id
   integer,                    intent(in) :: n_vars
@@ -2079,18 +2339,23 @@ function constructor( self_block, self_idx, n_interior, nbor_idx, face_id, n_var
   type(var_rec_t)                        :: this
 
   call this%destroy()
-
+  
+  
   this%self_block = self_block
   this%self_idx   = self_idx
   this%n_interior = n_interior
   this%n_boundary = size(nbor_idx) - n_interior
+  this%n_vars     = n_vars
+  this%basis      = zero_mean_basis_t(mono_basis,quad,h_ref)
+  
   allocate( this%nbor_idx( size(nbor_idx) ) )
   this%nbor_idx   = nbor_idx
+
   allocate( this%face_id( size(face_id) ) )
   this%face_id    = face_id
-  this%basis = zero_mean_basis_t(mono_basis,quad,h_ref)
-  allocate( this%coefs(this%basis%n_terms,this%n_vars) )
   
+  allocate( this%coefs(this%basis%n_terms,this%n_vars) )
+  this%coefs      = zero
 end function constructor
 
 pure elemental subroutine destroy_var_rec_t(this)
@@ -2109,7 +2374,7 @@ subroutine setup_reconstruction_interior_faces(this,nbors,fquads,term_start,term
   use math, only : mat_inv
   class(var_rec_t),                             intent(inout) :: this
   class(var_rec_t), dimension(this%n_interior), intent(in)    :: nbors
-  class(quad_t),    dimension(this%n_interior), intent(in)    :: fquads
+  class(quad_ptr),  dimension(this%n_interior), intent(in)    :: fquads
   integer,                                      intent(in)    :: term_start, term_end
   real(dp), dimension(term_end - term_start, term_end - term_start)                  :: A
   real(dp), dimension(term_end - term_start, term_end - term_start, this%n_interior) :: B
@@ -2148,7 +2413,7 @@ end subroutine setup_reconstruction_interior_faces
 subroutine setup_reconstruction( this, nbors, fquads, term_start, term_end )
   class(var_rec_t),                             intent(inout) :: this
   class(var_rec_t), dimension(this%n_interior), intent(in)    :: nbors
-  class(quad_t),    dimension(this%n_interior), intent(in)    :: fquads
+  class(quad_ptr),  dimension(this%n_interior), intent(in)    :: fquads
   integer,                                      intent(in)    :: term_start, term_end
 
   call this%setup_reconstruction_interior_faces(nbors,fquads,term_start,term_end)
@@ -2163,7 +2428,7 @@ pure subroutine get_LHS_interior( this, nbors, fquads, term_start, term_end, A, 
   use set_constants, only : zero, one
   class(var_rec_t),                             intent(in) :: this
   class(var_rec_t), dimension(this%n_interior), intent(in) :: nbors
-  class(quad_t),    dimension(this%n_interior), intent(in) :: fquads
+  class(quad_ptr),  dimension(this%n_interior), intent(in) :: fquads
   integer,                                      intent(in) :: term_start, term_end
   real(dp), dimension(term_end - term_start, term_end - term_start), intent(out) :: A
   real(dp), dimension(term_end - term_start, term_end - term_start, this%n_interior), intent(out) :: B
@@ -2177,13 +2442,13 @@ pure subroutine get_LHS_interior( this, nbors, fquads, term_start, term_end, A, 
   do j = 1,this%n_interior
     dij = abs( this%basis%x_ref - nbors(j)%basis%x_ref )
     xdij_mag = one/norm2(dij)
-    do q = 1,fquads(j)%n_quad
-      d_basis_i = this%basis%scaled_basis_derivatives( term_start, term_end, fquads(j)%quad_pts(:,q), dij )
-      d_basis_j = nbors(j)%basis%scaled_basis_derivatives( term_start, term_end, fquads(j)%quad_pts(:,q), dij )
+    do q = 1,fquads(j)%p%n_quad
+      d_basis_i = this%basis%scaled_basis_derivatives( term_start, term_end, fquads(j)%p%quad_pts(:,q), dij )
+      d_basis_j = nbors(j)%basis%scaled_basis_derivatives( term_start, term_end, fquads(j)%p%quad_pts(:,q), dij )
       do m = 1,term_end-term_start
         do l = 1,term_end-term_start
-          A(l,m)   = A(l,m)   + fquads(j)%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_i(:,m) )
-          B(l,m,j) = B(l,m,j) + fquads(j)%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_j(:,m) )
+          A(l,m)   = A(l,m)   + fquads(j)%p%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_i(:,m) )
+          B(l,m,j) = B(l,m,j) + fquads(j)%p%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_j(:,m) )
         end do
       end do
     end do
@@ -2195,7 +2460,7 @@ pure subroutine get_RHS_interior( this, nbors, fquads, term_start, term_end, D, 
   use set_constants, only : zero, one
   class(var_rec_t),                             intent(in) :: this
   class(var_rec_t), dimension(this%n_interior), intent(in) :: nbors
-  class(quad_t),    dimension(this%n_interior), intent(in) :: fquads
+  class(quad_ptr),  dimension(this%n_interior), intent(in) :: fquads
   integer,                                      intent(in) :: term_start, term_end
   real(dp), dimension( term_end - term_start, term_start ), intent(out) :: D
   real(dp), dimension( term_end - term_start, term_start, this%n_interior), intent(out) :: C
@@ -2210,13 +2475,14 @@ pure subroutine get_RHS_interior( this, nbors, fquads, term_start, term_end, D, 
   do j = 1,this%n_interior
     dij = abs( this%basis%x_ref - nbors(j)%basis%x_ref )
     xdij_mag = one/norm2(dij)
-    do q = 1,fquads(j)%n_quad
-      d_basis_i =     this%basis%scaled_basis_derivatives( term_start, term_end, fquads(j)%quad_pts(:,q), dij )
-      d_basis_j = nbors(j)%basis%scaled_basis_derivatives( 0, term_start, fquads(j)%quad_pts(:,q), dij )
+    do q = 1,fquads(j)%p%n_quad
+      d_basis_i =     this%basis%scaled_basis_derivatives( term_start, term_end, fquads(j)%p%quad_pts(:,q), dij )
+      d_basis_j = zero
+      d_basis_j(1:term_start,:) = nbors(j)%basis%scaled_basis_derivatives( 0, term_start, fquads(j)%p%quad_pts(:,q), dij )
       do m = 1,term_start
         do l = 1,term_end-term_start
-          D(l,m)   = D(l,m)   + fquads(j)%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_i(:,m) )
-          C(l,m,j) = C(l,m,j) + fquads(j)%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_j(:,m) )
+          D(l,m)   = D(l,m)   + fquads(j)%p%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_i(:,m) )
+          C(l,m,j) = C(l,m,j) + fquads(j)%p%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_j(:,m) )
         end do
       end do
     end do
@@ -2303,68 +2569,111 @@ end subroutine get_RHS_dirichlet
 
 end module var_rec_derived_type
 
-! module test_problem
-!   use set_precision, only : dp
-!   implicit none
+module test_problem
+  use set_precision, only : dp
+  implicit none
 
-!   private
+  private
 
-!   public :: setup_grid_and_reconstruction
+  public :: setup_grid_and_reconstruction
+contains
+  subroutine setup_grid_and_reconstruction( degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
+    use grid_derived_type, only : grid_type
+    use linspace_helper,   only : unit_cartesian_mesh_cat
+    use var_rec_derived_type, only : reconstruction_holder
+    use lagrange_interpolation, only : generate_1D_barycentric_info, destroy_1D_barycentric_info
+    integer,                     intent(in)  :: degree, n_vars, n_dim
+    integer, dimension(3),       intent(in)  :: n_nodes, n_ghost
+    type(grid_type),             intent(out) :: grid
+    type(reconstruction_holder), intent(out) :: rec
+    ! setup_reconstruction_holder( this, block_num, degree, n_vars, gblock )
+    call generate_1D_barycentric_info()
+    call grid%setup(1)
+    call grid%gblock(1)%setup(n_dim,n_nodes,n_ghost)
+    grid%gblock(1)%node_coords = unit_cartesian_mesh_cat(n_nodes(1),n_nodes(2),n_nodes(3))
+    call grid%gblock(1)%grid_vars%setup( grid%gblock(1) )
+    call rec%setup(1,degree,n_vars,grid%gblock(1))
+    call destroy_1D_barycentric_info()
+  end subroutine setup_grid_and_reconstruction
 
-!   subroutine setup_grid_and_reconstruction(grid,rec)
-!     use grid_derived_type, only : grid_type
-!     use linspace_helper,   only : unit_cartesian_mesh_cat
-
-!     type(grid_type), intent(out) :: grid
-
-!   end subroutine setup_grid_and_reconstruction
-
-! end module test_problem
+end module test_problem
 
 program main
   use set_precision, only : dp
   use set_constants, only : zero, one
-  use quadrature_derived_type, only : quad_t, create_quad_ref_1D, create_quad_ref_2D
-  use monomial_basis_derived_type, only : monomial_basis_t
-  use var_rec_derived_type, only : var_rec_t
+  use test_problem,  only : setup_grid_and_reconstruction
+  use grid_derived_type, only : grid_type
+  use var_rec_derived_type, only : reconstruction_holder
   use timer_derived_type, only : basic_timer_t
 
   implicit none
 
-  type(quad_t)    :: quad
-  type(monomial_basis_t) :: mono_basis
-  type(var_rec_t) :: rec
+  type(grid_type) :: grid
+  type(reconstruction_holder) :: rec
   type(basic_timer_t) :: timer
-  integer :: self_block, self_idx, n_vars, degree, n_dim
-  integer, dimension(:), allocatable :: int_idx, bnd_idx
-  real(dp), dimension(:), allocatable :: h_ref
-
+  integer :: degree, n_vars, n_dim
+  integer, dimension(3) :: n_nodes, n_ghost
   integer :: i, j, N, N_repeat
   real(dp) :: avg
 
-  self_block = 1
-  self_idx   = 1
-  n_vars     = 4
-  degree     = 4
-  n_dim      = 3
-  allocate(int_idx(2)); int_idx = [2,3]
-  allocate(bnd_idx(0))
-  allocate(h_ref(n_dim)); h_ref = one
+  degree  = 3
+  n_vars  = 1
+  n_dim   = 3
+  n_nodes = [3,3,3]
+  n_ghost = [0,0,0]
+  call setup_grid_and_reconstruction(degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
 
-  call create_quad_ref_2D(degree+1,quad)
-  mono_basis = monomial_basis_t(degree,n_dim)
-
-  N_repeat = 1000
-  avg = zero
-  do j = 1,N_repeat
-    call timer%tic()
-    rec =  var_rec_t( self_block, self_idx, int_idx, bnd_idx, n_vars, mono_basis, quad, h_ref )
-    avg = avg + timer%toc()
-  end do
-  write(*,*) 'Average Elapsed time: ', avg/real(N_repeat,dp)
-
-  deallocate( int_idx, bnd_idx, h_ref )
-  call quad%destroy()
+  write(*,*) 'Here'
   call rec%destroy()
-
+  call grid%destroy()
 end program main
+
+
+! program main
+!   use set_precision, only : dp
+!   use set_constants, only : zero, one
+!   use quadrature_derived_type, only : quad_t, create_quad_ref_1D, create_quad_ref_2D
+!   use monomial_basis_derived_type, only : monomial_basis_t
+!   use var_rec_derived_type, only : var_rec_t
+!   use timer_derived_type, only : basic_timer_t
+
+!   implicit none
+
+!   type(quad_t)    :: quad
+!   type(monomial_basis_t) :: mono_basis
+!   type(var_rec_t) :: rec
+!   type(basic_timer_t) :: timer
+!   integer :: self_block, self_idx, n_vars, degree, n_dim, n_interior
+!   integer, dimension(:), allocatable :: nbor_idx, face_id
+!   real(dp), dimension(:), allocatable :: h_ref
+
+!   integer :: i, j, N, N_repeat
+!   real(dp) :: avg
+
+!   self_block = 1
+!   self_idx   = 1
+!   n_vars     = 4
+!   degree     = 4
+!   n_dim      = 3
+!   n_interior = 2
+!   allocate(nbor_idx(2)); nbor_idx = [2,3]
+!   allocate(face_id(2)); face_id   = [2,3]
+!   allocate(h_ref(n_dim)); h_ref = one
+
+!   call create_quad_ref_2D(degree+1,quad)
+!   mono_basis = monomial_basis_t(degree,n_dim)
+
+!   N_repeat = 1000
+!   avg = zero
+!   do j = 1,N_repeat
+!     call timer%tic()
+!     rec =  var_rec_t( self_block, self_idx, n_interior, nbor_idx, face_id, n_vars, mono_basis, quad, h_ref )
+!     avg = avg + timer%toc()
+!   end do
+!   write(*,*) 'Average Elapsed time: ', avg/real(N_repeat,dp)
+
+!   deallocate( nbor_idx, face_id, h_ref )
+!   call quad%destroy()
+!   call rec%destroy()
+
+! end program main
