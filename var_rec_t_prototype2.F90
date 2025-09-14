@@ -2226,6 +2226,8 @@ module var_rec_derived_type
     real(dp), dimension(:,:),   allocatable :: A_inv_D
     real(dp), dimension(:,:,:), allocatable :: A_inv_B
     real(dp), dimension(:,:,:), allocatable :: A_inv_C
+    real(dp), dimension(:,:),   allocatable :: A, D
+    real(dp), dimension(:,:,:), allocatable :: B, C
   contains
     private
     ! procedure, public, pass :: setup => setup_reconstruction
@@ -2285,6 +2287,10 @@ contains
     if ( allocated(this%A_inv_B)  ) deallocate( this%A_inv_B )
     if ( allocated(this%A_inv_C)  ) deallocate( this%A_inv_C )
     if ( allocated(this%A_inv_D)  ) deallocate( this%A_inv_D )
+    if ( allocated(this%A      )  ) deallocate( this%A       )
+    if ( allocated(this%B      )  ) deallocate( this%B       )
+    if ( allocated(this%C      )  ) deallocate( this%C       )
+    if ( allocated(this%D      )  ) deallocate( this%D       )
   end subroutine destroy_var_rec_t
 
   subroutine allocate_reconstruction_matrices( this, term_start, term_end )
@@ -2294,10 +2300,18 @@ contains
     if ( allocated(this%A_inv_B) ) deallocate( this%A_inv_B )
     if ( allocated(this%A_inv_C) ) deallocate( this%A_inv_C )
     if ( allocated(this%A_inv_D) ) deallocate( this%A_inv_D )
+    if ( allocated(this%A      ) ) deallocate( this%A       )
+    if ( allocated(this%B      ) ) deallocate( this%B       )
+    if ( allocated(this%C      ) ) deallocate( this%C       )
+    if ( allocated(this%D      ) ) deallocate( this%D       )
     allocate( this%A_inv(   term_end-term_start,term_end-term_start ) )
     allocate( this%A_inv_B( term_end-term_start,term_end-term_start, this%n_interior ) )
     allocate( this%A_inv_C( term_end-term_start, term_start, this%n_interior ) )
     allocate( this%A_inv_D( term_end-term_start, term_start ) )
+    allocate( this%A(       term_end-term_start,term_end-term_start ) )
+    allocate( this%B( term_end-term_start,term_end-term_start, this%n_interior ) )
+    allocate( this%C( term_end-term_start, term_start, this%n_interior ) )
+    allocate( this%D( term_end-term_start, term_start ) )
   end subroutine allocate_reconstruction_matrices
 
   pure subroutine get_nbor_contribution( this, nbor, fquad, term_start, term_end, A, B, D, C )
@@ -2351,8 +2365,8 @@ contains
     integer,             intent(in) :: var_idx
     real(dp), dimension( term_end - term_start ) :: update
     update = zero
-    update = update + matmul( this%A_inv_C(:,:,nbor_id), nbor%coefs(term_start+1:term_end,var_idx) )
-    update = update + matmul( this%A_inv_D, this%coefs(term_start+1:term_end,var_idx) )
+    update = update + matmul( this%A_inv_C(:,:,nbor_id), nbor%coefs(1:term_start,var_idx) )
+    update = update + matmul( this%A_inv_D, this%coefs(1:term_start,var_idx) )
   end function get_RHS_contribution_update
 
   pure function get_LHS_contribution_update( this, nbor, nbor_id, term_start, term_end, var_idx ) result(update)
@@ -2466,8 +2480,16 @@ module var_rec_holder_type
     procedure, public, pass :: setup_basic => setup_reconstruction_holder_basic
     procedure, public, pass :: destroy     => destroy_reconstruction_holder
     procedure, public, pass :: solve       => perform_iterative_reconstruction_SOR
+    procedure,         pass :: SOR_iteration, SOR_cell_residual, SOR_residual_norm
   end type reconstruction_holder
 
+  abstract interface
+    pure elemental function spatial_function(x1,x2,x3) result(val)
+      use set_precision, only : dp
+      real(dp), intent(in) :: x1, x2, x3
+      real(dp)             :: val
+    end function spatial_function
+  end interface
 contains
   subroutine create_reconstruction_holder( this, block_num, degree, n_vars, gblock )
     use math, only : maximal_extents
@@ -2478,9 +2500,9 @@ contains
     type(grid_block),            intent(in)    :: gblock
     real(dp), dimension(gblock%n_dim) :: h_ref
     real(dp), dimension(3,8) :: nodes
-    integer, dimension(3) :: lo, hi, bnd_min, bnd_max, face_idx
+    integer, dimension(3) :: lo, hi, bnd_min, bnd_max
     integer, dimension(2*gblock%n_dim) :: nbor_cell_idx, nbor_face_id
-    integer :: i, j, k, cnt, n_int, dir, term_start, term_end
+    integer :: i, j, k, cnt, n_int
 
     call this%destroy()
     this%degree         = degree
@@ -2509,7 +2531,7 @@ contains
 
   end subroutine create_reconstruction_holder
 
-  subroutine setup_reconstruction_holder( this, term_start, term_end, gblock )
+  subroutine setup_reconstruction_holder( this, term_start, term_end, gblock, eval_fun )
     use set_constants,           only : zero
     use index_conversion,        only : get_face_idx_from_id
     use math,                    only : mat_inv
@@ -2519,12 +2541,13 @@ contains
     class(reconstruction_holder), target, intent(inout) :: this
     integer,                              intent(in)    :: term_start, term_end
     type(grid_block),             target, intent(in)    :: gblock
+    procedure(spatial_function), optional, intent(in)   :: eval_fun
     type(var_rec_t), pointer :: nbor  => null()
     type(quad_t),    pointer :: fquad => null()
-    real(dp), dimension(term_end - term_start, term_end - term_start )                :: dA, A
-    real(dp), dimension(term_end - term_start,            term_start )                :: dD, D
-    real(dp), dimension(term_end - term_start, term_end - term_start, 2*gblock%n_dim) :: B
-    real(dp), dimension(term_end - term_start,            term_start, 2*gblock%n_dim) :: C
+    real(dp), dimension(term_end - term_start, term_end - term_start )                :: dA
+    real(dp), dimension(term_end - term_start,            term_start )                :: dD
+    ! real(dp), dimension(term_end - term_start, term_end - term_start, 2*gblock%n_dim) :: B
+    ! real(dp), dimension(term_end - term_start,            term_start, 2*gblock%n_dim) :: C
     integer, dimension(3) :: face_idx
     integer :: i, j, k, n, cnt, dir
     this%term_start = term_start
@@ -2535,20 +2558,20 @@ contains
         do i = 1,gblock%n_cells(1)
           cnt = cnt + 1
           call this%rec(cnt)%allocate_reconstruction_matrices( term_start, term_end )
-          A = zero; B = zero; D = zero; C = zero
+          this%rec(cnt)%A = zero; this%rec(cnt)%B = zero; this%rec(cnt)%D = zero; this%rec(cnt)%C = zero
           do n = 1,this%rec(cnt)%n_interior
             call get_face_idx_from_id([i,j,k],this%rec(cnt)%face_id(n),dir,face_idx)
             fquad => gblock%grid_vars%face_quads(dir)%p(face_idx(1),face_idx(2),face_idx(3))
             nbor  => this%rec( this%rec(cnt)%nbor_idx(n) )
-            call this%rec(cnt)%get_nbor_contribution( nbor, fquad, term_start, term_end, dA, B(:,:,n), dD, C(:,:,n) )
-            A = A + dA
-            D = D + dD
+            call this%rec(cnt)%get_nbor_contribution( nbor, fquad, term_start, term_end, dA, this%rec(cnt)%B(:,:,n), dD, this%rec(cnt)%C(:,:,n) )
+            this%rec(cnt)%A = this%rec(cnt)%A + dA
+            this%rec(cnt)%D = this%rec(cnt)%D + dD
           end do
-          call mat_inv( A, this%rec(cnt)%A_inv, term_end - term_start )
-          this%rec(cnt)%A_inv_D = matmul(this%rec(cnt)%A_inv,D)
+          call mat_inv( this%rec(cnt)%A, this%rec(cnt)%A_inv, term_end - term_start )
+          this%rec(cnt)%A_inv_D = matmul(this%rec(cnt)%A_inv,this%rec(cnt)%D)
           do n = 1,this%rec(cnt)%n_interior
-            this%rec(cnt)%A_inv_B(:,:,j) = matmul( this%rec(cnt)%A_inv, B(:,:,j) )
-            this%rec(cnt)%A_inv_C(:,:,j) = matmul( this%rec(cnt)%A_inv, C(:,:,j) )
+            this%rec(cnt)%A_inv_B(:,:,n) = matmul( this%rec(cnt)%A_inv, this%rec(cnt)%B(:,:,n) )
+            this%rec(cnt)%A_inv_C(:,:,n) = matmul( this%rec(cnt)%A_inv, this%rec(cnt)%C(:,:,n) )
           end do
         end do
       end do
@@ -2578,36 +2601,121 @@ contains
     this%term_end   = 0
   end subroutine destroy_reconstruction_holder
 
-  subroutine perform_iterative_reconstruction_SOR(this,omega,tol,n_iter,residual)
-    class(reconstruction_holder), intent(inout) :: this
-    real(dp), optional, intent(in)  :: omega, tol
-    integer,  optional, intent(in)  :: n_iter
-    real(dp), dimension(:,:), optional, intent(inout) :: residual
+  subroutine perform_iterative_reconstruction_SOR(this,var_idx,omega,tol,n_iter,converged,residual)
+    use set_constants, only : zero, one
+    class(reconstruction_holder),       intent(inout) :: this
+    integer,  dimension(:),             intent(in)    :: var_idx
+    real(dp), optional,                 intent(in)    :: omega, tol
+    integer,  optional,                 intent(in)    :: n_iter
+    logical,  optional,                 intent(out)   :: converged
+    real(dp), optional, dimension(:,:), allocatable, intent(out) :: residual
+    real(dp) :: omega_, tol_
+    real(dp), dimension(size(var_idx)) :: res_tmp, res_init
+    integer :: n, n_var, n_iter_
+    logical :: converged_
 
+    n_var = size(var_idx)
+    omega_ = 1.3_dp
+    tol_   = 1.0e-8_dp
+    n_iter_ = 100
+    if ( present(omega)     ) omega_     = omega
+    if ( present(tol)       ) tol_       = tol
+    if ( present(n_iter)    ) n_iter_    = n_iter
+    if ( present(converged) ) converged  = .false.
+    converged_ = .false.
+    if (present(residual)) then
+      if (allocated(residual)) deallocate(residual)
+      allocate(residual(n_var,n_iter_))
+    end if
+    res_init = this%SOR_residual_norm(var_idx)
+
+    if (any(res_init < epsilon(one))) then
+      converged_ = .true.
+      if ( present(converged) ) converged = converged_
+      return
+    end if
+
+    do n = 1,n_iter_
+      call this%SOR_iteration(var_idx,omega_,res_tmp)
+      res_tmp = res_tmp / res_init
+      converged_ = all( res_tmp < tol)
+      if ( present(residual ) ) residual(:,n) = res_tmp
+      if ( present(converged) ) converged     = converged_
+      if ( converged_ ) return
+    end do
   end subroutine perform_iterative_reconstruction_SOR
 
-  ! subroutine SOR_iteration(this,var_idx,omega,residual)
-  !   use set_constants, only : zero
-  !   class(reconstruction_holder), intent(inout) :: this
-  !   integer,  dimension(:),       intent(in)    :: var_idx
-  !   real(dp),                     intent(in)    :: omega
-  !   real(dp), dimension(this%monomial_basis%n_terms,this%term_end-this%term_start), intent(out) :: residual
-  !   real(dp), dimension(this%term_end-this%term_start,size(var_idx)) :: update
-  !   integer :: i, n, j, vv, v, n_var
+  subroutine SOR_iteration(this,var_idx,omega,residual)
+    use set_constants, only : zero, one
+    class(reconstruction_holder), intent(inout) :: this
+    integer,  dimension(:),       intent(in)    :: var_idx
+    real(dp),                     intent(in)    :: omega
+    ! real(dp), dimension(this%term_end-this%term_start,size(var_idx)), intent(out) :: residual
+    real(dp), dimension(size(var_idx)), intent(out) :: residual
+    real(dp), dimension(this%term_end-this%term_start,size(var_idx)) :: update
+    integer :: i, n, j, vv, v, n_var
+    
+    residual = zero
+    n_var = size(var_idx)
+    do i = 1,this%n_cells
+      update = zero
+      do n = 1,this%rec(i)%n_interior
+        j = this%rec(i)%nbor_idx(n)
+        do vv = 1,n_var
+          v = var_idx(vv)
+          update(:,vv) = update(:,vv) + this%rec(i)%get_LHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
+          update(:,vv) = update(:,vv) + this%rec(i)%get_RHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
+        end do
+      end do
+      do vv = 1,n_var
+        v = var_idx(vv)
+        this%rec(i)%coefs(this%term_start+1:this%term_end,v) = (one-omega)*this%rec(i)%coefs(this%term_start+1:this%term_end,v) + omega*update(:,vv)
+        residual = residual + sum( ( this%SOR_cell_residual(i,var_idx) )**2,dim=1 )
+      end do
+    end do
+    residual = sqrt( residual )
+  end subroutine SOR_iteration
 
-  !   n_var = size(var_idx)
-  !   do i = 1,this%n_cells
-  !     update = zero
-  !     do n = 1,this%rec(i)%n_interior
-  !       j = this%rec(i)%nbor_idx(n)
-  !       do vv = 1,n_var
-  !         v = var_idx(vv)
-  !         update(:,vv) = update(:,vv) + this%rec(i)%get_LHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
-  !         update(:,vv) = update(:,vv) + this%rec(i)%get_RHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
-  !       end do
-  !       this%
-  !     end do
-  ! end subroutine SOR_iteration
+  pure function SOR_residual_norm(this,var_idx) result(residual)
+    use set_constants, only : zero
+    class(reconstruction_holder), intent(in)    :: this
+    integer,  dimension(:),       intent(in)    :: var_idx
+    real(dp), dimension(size(var_idx))          :: residual
+    integer :: i, vv, v, n_var
+
+    residual = zero
+    n_var = size(var_idx)
+    do i = 1,this%n_cells
+      do vv = 1,n_var
+        v = var_idx(vv)
+        residual = residual + sum( ( this%SOR_cell_residual(i,var_idx) )**2,dim=1 )
+      end do
+    end do
+    residual = sqrt( residual )
+  end function SOR_residual_norm
+
+  pure function SOR_cell_residual(this,cell_idx,var_idx) result(residual)
+    use set_constants, only : zero, one
+    class(reconstruction_holder), intent(in)    :: this
+    integer,                      intent(in)    :: cell_idx
+    integer,  dimension(:),       intent(in)    :: var_idx
+    real(dp), dimension(this%term_end-this%term_start,size(var_idx)) :: residual
+    integer :: n, j, vv, v, n_var
+
+    residual = zero
+
+    n_var = size(var_idx)
+    do vv = 1,n_var
+      v = var_idx(vv)
+      residual(:,vv) = residual(:,vv) + matmul( this%rec(cell_idx)%A, this%rec(cell_idx)%coefs(this%term_start+1:this%term_end,v) )
+      residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%D, this%rec(cell_idx)%coefs(1:this%term_start,v) )
+      do n = 1,this%rec(cell_idx)%n_interior
+        j = this%rec(cell_idx)%nbor_idx(n)
+        residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%B(:,:,n), this%rec(j)%coefs(this%term_start+1:this%term_end,v) )
+        residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%C(:,:,n), this%rec(j)%coefs(1:this%term_start,v) )
+      end do
+    end do
+  end function SOR_cell_residual
 
 end module var_rec_holder_type
 
@@ -2626,6 +2734,7 @@ contains
     integer, dimension(3),       intent(in)  :: n_nodes, n_ghost
     type(grid_type),             intent(out) :: grid
     type(reconstruction_holder), intent(out) :: rec
+    logical :: converged
     ! setup_reconstruction_holder( this, block_num, degree, n_vars, gblock )
     call generate_1D_barycentric_info()
     call grid%setup(1)
@@ -2634,6 +2743,8 @@ contains
     call grid%gblock(1)%grid_vars%setup( grid%gblock(1) )
     call rec%create(1,degree,n_vars,grid%gblock(1))
     call rec%setup_basic(grid%gblock(1))
+    call rec%solve([1],omega=1.3_dp,tol=1e-10_dp,n_iter=10,converged=converged)
+    write(*,*) 'converved =', converged
     call destroy_1D_barycentric_info()
   end subroutine setup_grid_and_reconstruction
 
@@ -2660,7 +2771,7 @@ program main
   degree  = 3
   n_vars  = 1
   n_dim   = 3
-  n_nodes = [3,3,3]
+  n_nodes = [5,5,5]
   n_ghost = [0,0,0]
   call setup_grid_and_reconstruction(degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
 
