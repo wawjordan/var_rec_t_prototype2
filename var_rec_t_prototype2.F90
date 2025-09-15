@@ -2481,13 +2481,15 @@ module var_rec_holder_type
     procedure, public, pass :: destroy     => destroy_reconstruction_holder
     procedure, public, pass :: solve       => perform_iterative_reconstruction_SOR
     procedure,         pass :: SOR_iteration, SOR_cell_residual, SOR_residual_norm
+    procedure,         pass :: set_cell_avgs
   end type reconstruction_holder
 
   abstract interface
-    pure elemental function spatial_function(x1,x2,x3) result(val)
+    pure function spatial_function(n_var,x) result(val)
       use set_precision, only : dp
-      real(dp), intent(in) :: x1, x2, x3
-      real(dp)             :: val
+      integer,                intent(in) :: n_var
+      real(dp), dimension(:), intent(in) :: x
+      real(dp), dimension(n_var)         :: val
     end function spatial_function
   end interface
 contains
@@ -2541,7 +2543,7 @@ contains
     class(reconstruction_holder), target, intent(inout) :: this
     integer,                              intent(in)    :: term_start, term_end
     type(grid_block),             target, intent(in)    :: gblock
-    procedure(spatial_function), optional, intent(in)   :: eval_fun
+    procedure(spatial_function), optional               :: eval_fun
     type(var_rec_t), pointer :: nbor  => null()
     type(quad_t),    pointer :: fquad => null()
     real(dp), dimension(term_end - term_start, term_end - term_start )                :: dA
@@ -2552,6 +2554,9 @@ contains
     integer :: i, j, k, n, cnt, dir
     this%term_start = term_start
     this%term_end   = term_end
+
+    if (present(eval_fun)) call this%set_cell_avgs(gblock,eval_fun)
+
     cnt = 0
     do k = 1,gblock%n_cells(3)
       do j = 1,gblock%n_cells(2)
@@ -2578,14 +2583,19 @@ contains
     end do
   end subroutine setup_reconstruction_holder
 
-  subroutine setup_reconstruction_holder_basic( this, gblock )
+  subroutine setup_reconstruction_holder_basic( this, gblock, eval_fun )
     use grid_derived_type, only : grid_block
     class(reconstruction_holder), intent(inout) :: this
     type(grid_block),             intent(in)    :: gblock
+    procedure(spatial_function), optional       :: eval_fun
     integer :: term_start, term_end
     term_start = 2
     term_end   = this%monomial_basis%n_terms
-    call this%setup(term_start,term_end,gblock)
+    if (present(eval_fun)) then
+      call this%setup(term_start,term_end,gblock,eval_fun=eval_fun)
+    else
+      call this%setup(term_start,term_end,gblock)
+    end if
   end subroutine setup_reconstruction_holder_basic
 
   pure elemental subroutine destroy_reconstruction_holder( this )
@@ -2600,6 +2610,45 @@ contains
     this%term_start = 0
     this%term_end   = 0
   end subroutine destroy_reconstruction_holder
+
+  subroutine set_cell_avgs(this,gblock,eval_fun)
+    use set_constants,           only : zero
+    use grid_derived_type,       only : grid_block
+    class(reconstruction_holder), intent(inout) :: this
+    type(grid_block),             intent(in)    :: gblock
+    procedure(spatial_function)                 :: eval_fun
+    real(dp), dimension(:,:), allocatable :: tmp_val
+    real(dp), dimension(3) :: pt
+    integer :: i, j, k, n, cnt, n_quad, n_var
+    n_quad = maxval( gblock%grid_vars%quad%n_quad )
+    n_var  = maxval( this%rec%n_vars )
+    allocate( tmp_val(n_var,n_quad) )
+
+    !  pure function integrate_vector( this, neq, f ) result( integral )
+    ! use set_precision, only : dp
+    ! class(quad_t),                        intent(in) :: this
+    ! integer,                              intent(in) :: neq
+    ! real(dp), dimension(neq,this%n_quad), intent(in) :: f
+    cnt = 0
+    do k = 1,gblock%n_cells(3)
+      do j = 1,gblock%n_cells(2)
+        do i = 1,gblock%n_cells(1)
+          associate( quad   => gblock%grid_vars%quad(i,j,k), &
+                     volume => gblock%grid_vars%volume(i,j,k) )
+            cnt = cnt + 1
+            n_var  = this%rec(cnt)%n_vars
+            n_quad = quad%n_quad
+            tmp_val = zero
+            do n = 1,n_quad
+              pt = quad%quad_pts(:,n)
+              tmp_val(1:n_var,n) = eval_fun(n_var,pt)
+            end do
+            this%rec(cnt)%coefs(1,1:n_var) = quad%integrate(n_var,tmp_val(1:n_var,1:n_quad)) / volume
+          end associate
+        end do
+      end do
+    end do
+  end subroutine set_cell_avgs
 
   subroutine perform_iterative_reconstruction_SOR(this,var_idx,omega,tol,n_iter,converged,residual)
     use set_constants, only : zero, one
@@ -2638,6 +2687,7 @@ contains
     do n = 1,n_iter_
       call this%SOR_iteration(var_idx,omega_,res_tmp)
       res_tmp = res_tmp / res_init
+      write(*,*) n, res_tmp
       converged_ = all( res_tmp < tol)
       if ( present(residual ) ) residual(:,n) = res_tmp
       if ( present(converged) ) converged     = converged_
@@ -2725,6 +2775,23 @@ module test_problem
   private
   public :: setup_grid_and_reconstruction
 contains
+
+  pure function test_function_1(n_var,x) result(val)
+    integer,                intent(in) :: n_var
+    real(dp), dimension(:), intent(in) :: x
+    real(dp), dimension(n_var)         :: val
+
+    val(1) = 999.0_dp * x(1) - 888.0_dp * x(2) + 777.0_dp * x(3) - 666.0_dp
+  end function test_function_1
+
+  pure function test_function_2(n_var,x) result(val)
+  use set_constants, only : pi
+    integer,                intent(in) :: n_var
+    real(dp), dimension(:), intent(in) :: x
+    real(dp), dimension(n_var)         :: val
+    val(1) = sin(pi*x(1)) * sin(pi*x(2)) * sin(pi*x(3))
+  end function test_function_2
+
   subroutine setup_grid_and_reconstruction( degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
     use grid_derived_type, only : grid_type
     use linspace_helper,   only : unit_cartesian_mesh_cat
@@ -2742,9 +2809,9 @@ contains
     grid%gblock(1)%node_coords = unit_cartesian_mesh_cat(n_nodes(1),n_nodes(2),n_nodes(3))
     call grid%gblock(1)%grid_vars%setup( grid%gblock(1) )
     call rec%create(1,degree,n_vars,grid%gblock(1))
-    call rec%setup_basic(grid%gblock(1))
-    call rec%solve([1],omega=1.3_dp,tol=1e-10_dp,n_iter=10,converged=converged)
-    write(*,*) 'converved =', converged
+    call rec%setup_basic(grid%gblock(1),eval_fun=test_function_1)
+    call rec%solve([1],omega=1.3_dp,tol=1e-10_dp,n_iter=100,converged=converged)
+    write(*,*) 'converged =', converged
     call destroy_1D_barycentric_info()
   end subroutine setup_grid_and_reconstruction
 
@@ -2770,8 +2837,8 @@ program main
 
   degree  = 3
   n_vars  = 1
-  n_dim   = 3
-  n_nodes = [5,5,5]
+  n_dim   = 2
+  n_nodes = [5,5,2]
   n_ghost = [0,0,0]
   call setup_grid_and_reconstruction(degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
 
