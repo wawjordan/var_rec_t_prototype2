@@ -118,6 +118,129 @@ contains
 
 end module message
 
+module debug
+
+  implicit none
+
+  private
+
+  public :: write_array
+
+  interface write_array
+    procedure write_integer_array_to_stdout
+    procedure write_integer_array_to_file
+    procedure write_real_array_to_stdout
+    procedure write_real_array_to_file
+    procedure write_logical_array_to_stdout
+    procedure write_logical_array_to_file
+  end interface write_array
+
+contains
+
+  subroutine write_real_array_to_file( x, dim, filename )
+
+    use set_precision, only : dp
+
+    real(dp), dimension(:), intent(in) :: x
+    integer,  dimension(:), intent(in) :: dim
+    character(*),           intent(in) :: filename
+    integer :: fid, ndim, nx, i
+    continue
+    ndim = size(dim)
+    nx   = size(x)
+
+    if (nx /= product(dim) ) then
+      write(*,*) 'ERROR: Array dimensions are incorrect.'
+      return
+    end if
+    ! Open File
+    open( newunit=fid, file=trim(filename), status='replace',action='write')
+    ! Write Array Size
+    write(fid,*) ( dim(i), i = 1, ndim )
+    ! Write Array
+    do i = 1,nx
+      write(fid,*) x(i)
+    end do
+
+    close(fid)
+
+  end subroutine write_real_array_to_file
+
+  subroutine write_integer_array_to_file( x, dim, filename )
+    integer, dimension(:), intent(in) :: x
+    integer, dimension(:), intent(in) :: dim
+    character(*),          intent(in) :: filename
+    integer :: fid, ndim, nx, i
+    
+    ndim = size(dim)
+    nx   = size(x)
+    if (nx /= product(dim) ) then
+      write(*,*) 'ERROR: Array dimensions are incorrect.'
+      return
+    end if
+    ! Open File
+    open( newunit=fid, file=trim(filename), status='replace',action='write')
+    ! Write Array Size
+    write(fid,*) ( dim(i), i = 1, ndim )
+    ! Write Array
+    do i = 1,nx
+      write(fid,*) x(i)
+    end do
+    close(fid)
+
+  end subroutine write_integer_array_to_file
+
+  subroutine write_logical_array_to_file( x, dim, filename )
+    logical, dimension(:), intent(in) :: x
+    integer, dimension(:), intent(in) :: dim
+    character(*),          intent(in) :: filename
+    integer :: fid, ndim, nx, i
+
+    ndim = size(dim)
+    nx   = size(x)
+    if (nx /= product(dim) ) then
+      write(*,*) 'ERROR: Array dimensions are incorrect.'
+      return
+    end if
+    ! Open File
+    open( newunit=fid, file=trim(filename), status='replace',action='write')
+    ! Write Array Size
+    write(fid,*) ( dim(i), i = 1, ndim )
+    ! Write Array
+    do i = 1,nx
+      write(fid,*) x(i)
+    end do
+    close(fid)
+
+  end subroutine write_logical_array_to_file
+
+  subroutine write_real_array_to_stdout( x )
+    use set_precision, only : dp
+    real(dp), dimension(:), intent(in) :: x
+    integer :: i
+    do i = 1,size(x)
+      write(*,*) x(i)
+    end do
+  end subroutine write_real_array_to_stdout
+
+  subroutine write_integer_array_to_stdout( x )
+    integer, dimension(:), intent(in) :: x
+    integer :: i
+    do i = 1,size(x)
+      write(*,'(I0)') x(i)
+    end do
+  end subroutine write_integer_array_to_stdout
+
+  subroutine write_logical_array_to_stdout( x )
+    logical, dimension(:), intent(in) :: x
+    integer :: i
+    do i = 1,size(x)
+      write(*,'(I0)') x(i)
+    end do
+  end subroutine write_logical_array_to_stdout
+
+end module debug
+
 module timer_derived_type
 
   use set_precision, only : dp
@@ -178,6 +301,7 @@ module index_conversion
   public :: local2global, local2global_bnd, local2global_ghost
   public :: in_bound, cell_face_nbors
   public :: get_face_idx_from_id
+  public :: get_reshape_indices
 
   interface cell_face_nbors
     module procedure cell_face_nbors_lin
@@ -337,7 +461,85 @@ contains
     face_idx = idx + face_offset
   end subroutine get_face_idx_from_id
 
+  pure subroutine get_reshape_indices( sz_in, loc, sz_out, sz_cnt, idx_start, idx_end )
+    integer, dimension(:),           intent(in)  :: sz_in
+    integer, dimension(size(sz_in)), intent(in)  :: loc
+    integer, dimension(size(sz_in)), intent(out) :: sz_out
+    integer,                         intent(out) :: sz_cnt
+    integer, dimension(size(sz_in)), intent(out) :: idx_start
+    integer, dimension(size(sz_in)), intent(out) :: idx_end
+
+    logical, dimension(size(sz_in)) :: lo, hi, varies
+
+    lo     = (loc==0)
+    hi     = (loc==1)
+    varies = (loc==2)
+    sz_out    = 1
+    sz_cnt    = count(varies)
+    sz_out(1:sz_cnt) = pack(sz_in,varies)
+    idx_start = 1
+    idx_end   = 1
+
+    where ( lo .or. varies ) idx_start = 1
+    where ( hi             ) idx_start = sz_in
+    where ( lo             ) idx_end   = 1
+    where ( hi .or. varies ) idx_end   = sz_in
+
+  end subroutine get_reshape_indices
+
 end module index_conversion
+
+module reshape_array
+  use set_precision, only : dp
+  implicit none
+  private
+  public :: extract_1D_slice_from_3D_array
+  public :: extract_2D_slice_from_3D_array
+contains
+
+  pure function extract_1D_slice_from_3D_array(A,lo,hi,sz) result(slice)
+    use index_conversion, only : get_reshape_indices
+    real(dp), dimension(:,:,:), intent(in) :: A
+    integer,  dimension(3),     intent(in) :: lo, hi
+    integer,                   intent(in) :: sz
+    real(dp), dimension(sz) :: slice
+    ! integer :: i, j, k, cnt
+
+    slice = reshape( A(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), [sz] )
+    ! cnt = 0
+    ! do k = lo(3),hi(3)
+    !   do j = lo(2),hi(2)
+    !     do i = lo(1),hi(1)
+    !       cnt = cnt + 1
+    !       slice(cnt) = A(i,j,k)
+    !     end do
+    !   end do
+    ! end do
+  end function extract_1D_slice_from_3D_array
+
+  pure function extract_2D_slice_from_3D_array(A,lo,hi,sz) result(slice)
+    use index_conversion, only : get_reshape_indices
+    real(dp), dimension(:,:,:), intent(in) :: A
+    integer,  dimension(3),     intent(in) :: lo, hi
+    integer,  dimension(2),     intent(in) :: sz
+    real(dp), dimension(sz(1),sz(2)) :: slice
+    ! real(dp), dimension(product(sz)) :: slice_tmp
+    ! integer :: i, j, k, cnt
+
+    slice = reshape( A(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), sz )
+    ! cnt = 0
+    ! do k = lo(3),hi(3)
+    !   do j = lo(2),hi(2)
+    !     do i = lo(1),hi(1)
+    !       cnt = cnt + 1
+    !       slice_tmp(cnt) = A(i,j,k)
+    !     end do
+    !   end do
+    ! end do
+    ! slice = reshape(slice_tmp,sz)
+  end function extract_2D_slice_from_3D_array
+
+end module reshape_array
 
 module combinatorics
   implicit none
@@ -388,84 +590,11 @@ module math
   use set_precision, only : dp
   implicit none
   private
-  public :: cross_product, vector_norm
+  public :: cross_product, det_3x3, vector_norm
   public :: LUdecomp, LUsolve, mat_inv
-  public :: maximal_diameter, maximal_extents
   public :: LegendrePolynomialAndDerivative, LegendreGaussNodesAndWeights
+  public :: maximal_diameter, maximal_extents
 contains
-
-    elemental subroutine LegendrePolynomialAndDerivative(N,x,LN,dLN)
-    use set_constants, only : zero, one, two
-    integer, intent(in) :: N
-    real(dp), intent(in) :: x
-    real(dp), intent(out) :: LN, dLN
-    real(dp) :: LNm2, LNm1, dLNm2, dLNm1
-    integer :: j
-    if (N == 0) then
-      LN = one
-      dLN = zero
-    elseif (N == 1) then
-      LN = x
-      dLN = one
-    else
-      LNm2 = one
-      LNm1 = x
-      dLNm2 = zero
-      dLNm1 = one
-      do j = 2,N
-        LN = real(2*j-1,dp)/real(j,dp) * x * LNm1 &
-          - real(j-1,dp)/real(j,dp) * LNm2
-        dLN = dLNm2 + real(2*j-1,dp) * LNm1
-        LNm2 = LNm1
-        LNm1 = LN
-        dLNm2 = dLNm1
-        dLNm1 = dLN
-      end do
-    end if
-  end subroutine LegendrePolynomialAndDerivative
-
-  pure subroutine LegendreGaussNodesAndWeights(N,x,w)
-    use set_constants, only : zero, one, two, four, third, pi
-    integer,                  intent(in)  :: N
-    real(dp), dimension(N+1), intent(out) :: x, w
-    integer :: j, k
-    real(dp) :: eps4, delta, LNp1, dLNp1
-    integer, parameter :: quad_n_iter = 10
-    eps4 = four*epsilon(one)
-    x = zero
-    w = zero
-
-    if (N == 0) then
-      x(1) = zero
-      w(1) = two
-    elseif (N == 1) then
-      x(1) = -sqrt(third)
-      w(1) = one
-      x(2) = -x(1)
-      w(2) = w(1)
-    else
-      do j = 0,(N+1)/2 - 1
-        x(j+1) = -cos( ( real(2*j+1,dp)/real(2*N+2,dp) )*pi )
-        do k = 1,quad_n_iter
-          call LegendrePolynomialAndDerivative(N+1,x(j+1),LNp1,dLNp1)
-          delta = -LNp1/dLNp1
-          x(j+1) = x(j+1) + delta
-          if ( abs(delta) <= eps4*abs(x(j+1)) ) then
-            exit
-          end if
-        end do
-        call LegendrePolynomialAndDerivative(N+1,x(j+1),LNp1,dLNp1)
-        x(N+1-j) = -x(j+1)
-        w(j+1) = two/( (one-x(j+1)**2)*dLNp1**2)
-        w(N+1-j) = w(j+1)
-      end do
-      if (mod(N,2) == 0) then
-        call LegendrePolynomialAndDerivative(N+1,zero,LNp1,dLNp1)
-        x(N/2+1) = zero
-        w(N/2+1) = two/dLNp1**2
-      end if
-    end if
-  end subroutine LegendreGaussNodesAndWeights
 
   pure function cross_product( vec1, vec2 )
     real(dp), dimension(3), intent(in) :: vec1, vec2
@@ -474,6 +603,15 @@ contains
     cross_product(2) = -( vec1(1)*vec2(3) - vec1(3)*vec2(1) )
     cross_product(3) =  ( vec1(1)*vec2(2) - vec1(2)*vec2(1) )
   end function cross_product
+
+  pure function det_3x3( mat )
+    real(dp), dimension(3,3), intent(in) :: mat
+    real(dp)                             :: det_3x3
+    continue
+    det_3x3 = mat(1,1)*(mat(2,2)*mat(3,3)-mat(2,3)*mat(3,2)) &
+            - mat(1,2)*(mat(2,1)*mat(3,3)-mat(2,3)*mat(3,1)) &
+            + mat(1,3)*(mat(2,1)*mat(3,2)-mat(2,2)*mat(3,1))
+  end function det_3x3
 
   pure function vector_norm( vector )
     use set_precision, only : dp
@@ -488,7 +626,7 @@ contains
     vector_norm = sqrt( vector_norm )
   end function vector_norm
 
-!================================== LUdecomp =================================80
+  !================================== LUdecomp =================================80
 !>
 !! LU decomposition, with pivoting, for a regular NxN dense array
 !<
@@ -580,6 +718,79 @@ contains
       call lusolve( inv(:,i), lu, p, b, n )
     end do
   end subroutine mat_inv
+
+  elemental subroutine LegendrePolynomialAndDerivative(N,x,LN,dLN)
+    use set_constants, only : zero, one, two
+    integer, intent(in) :: N
+    real(dp), intent(in) :: x
+    real(dp), intent(out) :: LN, dLN
+    real(dp) :: LNm2, LNm1, dLNm2, dLNm1
+    integer :: j
+    if (N == 0) then
+      LN = one
+      dLN = zero
+    elseif (N == 1) then
+      LN = x
+      dLN = one
+    else
+      LNm2 = one
+      LNm1 = x
+      dLNm2 = zero
+      dLNm1 = one
+      do j = 2,N
+        LN = real(2*j-1,dp)/real(j,dp) * x * LNm1 &
+          - real(j-1,dp)/real(j,dp) * LNm2
+        dLN = dLNm2 + real(2*j-1,dp) * LNm1
+        LNm2 = LNm1
+        LNm1 = LN
+        dLNm2 = dLNm1
+        dLNm1 = dLN
+      end do
+    end if
+  end subroutine LegendrePolynomialAndDerivative
+
+  pure subroutine LegendreGaussNodesAndWeights(N,x,w)
+    use set_constants, only : zero, one, two, four, third, pi
+    integer,                  intent(in)  :: N
+    real(dp), dimension(N+1), intent(out) :: x, w
+    integer :: j, k
+    real(dp) :: eps4, delta, LNp1, dLNp1
+    integer, parameter :: quad_n_iter = 10
+    eps4 = four*epsilon(one)
+    x = zero
+    w = zero
+
+    if (N == 0) then
+      x(1) = zero
+      w(1) = two
+    elseif (N == 1) then
+      x(1) = -sqrt(third)
+      w(1) = one
+      x(2) = -x(1)
+      w(2) = w(1)
+    else
+      do j = 0,(N+1)/2 - 1
+        x(j+1) = -cos( ( real(2*j+1,dp)/real(2*N+2,dp) )*pi )
+        do k = 1,quad_n_iter
+          call LegendrePolynomialAndDerivative(N+1,x(j+1),LNp1,dLNp1)
+          delta = -LNp1/dLNp1
+          x(j+1) = x(j+1) + delta
+          if ( abs(delta) <= eps4*abs(x(j+1)) ) then
+            exit
+          end if
+        end do
+        call LegendrePolynomialAndDerivative(N+1,x(j+1),LNp1,dLNp1)
+        x(N+1-j) = -x(j+1)
+        w(j+1) = two/( (one-x(j+1)**2)*dLNp1**2)
+        w(N+1-j) = w(j+1)
+      end do
+      if (mod(N,2) == 0) then
+        call LegendrePolynomialAndDerivative(N+1,zero,LNp1,dLNp1)
+        x(N/2+1) = zero
+        w(N/2+1) = two/dLNp1**2
+      end if
+    end if
+  end subroutine LegendreGaussNodesAndWeights
 
   pure function maximal_diameter(dim,n_points,points) result(d)
     use set_constants, only : zero
@@ -780,39 +991,74 @@ contains
 
 end module linspace_helper
 
-module lagrange_interpolation
+module interpolant_derived_type
   use set_precision, only : dp
   use set_constants, only : zero, one, two, half
   implicit none
   private
-  ! public :: xb, wb, Dmat
-  public :: generate_1D_barycentric_info, destroy_1D_barycentric_info
-  public :: lagbary, lagbary_wderiv
-  public :: lagbary_2D, lagbary_2D_wgrad
-  public :: lagbary_3D, lagbary_3D_wgrad
-  public :: calc_grid_metrics, jacobian_determinant
-  public :: normal_vectors
-  interface jacobian_determinant
-    module procedure jacobian_determinant_2D
-    module procedure jacobian_determinant_3D
-  end interface jacobian_determinant
+  public :: interpolant_t
 
-  integer :: Nmax = 10
-  real(dp), dimension(:,:,:,:), allocatable :: Dmat
-  real(dp), dimension(:,:),   allocatable :: xb, wb
+  type :: interpolant_t
+    integer :: Nmax
+    real(dp), dimension(:,:),     allocatable :: xb, wb
+    real(dp), dimension(:,:,:,:), allocatable :: Dmat
+  contains
+    private
+    procedure, public, nopass :: constructor
+    procedure, public, pass   :: destroy       => destroy_interpolant
+    procedure,         pass   :: lagbary, lagbary_wderiv, lagbary_wderiv2
+    procedure,         pass   :: lagbary_2D, lagbary_2D_wgrad, lagbary_2D_whess
+    procedure,         pass   :: lagbary_3D, lagbary_3D_wgrad, lagbary_3D_whess
+    procedure, public, pass   :: calc_grid_metrics, calc_grid_metrics_alt
+    procedure, public, pass   :: normal_vectors
+    ! procedure, public, pass   :: map_point_3D
+    procedure, public, pass   :: map_point_3D_curve, map_point_3D_surface, map_point_3D_volume
+  end type interpolant_t
+
+  interface interpolant_t
+    procedure constructor
+  end interface interpolant_t
+
 contains
 
-  elemental logical function almost_equal(a,b)
+  pure elemental subroutine destroy_interpolant(this)
+    class(interpolant_t), intent(inout) :: this
+    if ( allocated(this%Dmat) ) deallocate(this%Dmat)
+    if ( allocated(this%xb) )   deallocate(this%xb)
+    if ( allocated(this%wb) )   deallocate(this%wb)
+    this%Nmax = 0
+  end subroutine destroy_interpolant
+
+  pure elemental function constructor(N) result(this)
+    use linspace_helper, only : linspace
+    use set_constants,   only : zero, one
+    integer, optional, intent(in) :: N
+    type(interpolant_t)           :: this
+    integer :: j
+    call this%destroy()
+    if ( present(N) ) this%Nmax = max(N,2)
+    allocate( this%Dmat(this%Nmax,this%Nmax,this%Nmax,2) )
+    allocate(   this%xb(this%Nmax,this%Nmax), this%wb(this%Nmax,this%Nmax) )
+    this%Dmat = zero; this%xb = zero; this%wb = zero
+    this%wb(1,1) = one
+    do j = 2,this%Nmax
+      this%xb(1:j,j) = linspace(j,-one,one)
+      this%wb(1:j,j) = barycentric_weights( this%xb(1:j,j) )
+      this%Dmat(1:j,1:j,j,:) = mth_order_polynomial_derivative_matrix( this%xb(1:j,j), this%wb(1:j,j), 2 )
+    end do
+  end function constructor
+
+  pure elemental logical function almost_equal(a,b)
     real(dp), intent(in) :: a, b
     logical :: test1, test2, test3
     test1 = ( (a==zero) .or. (b==zero) )
     test2 = ( abs(a-b) <= two*epsilon(one) )
     test3 = ( ( abs(a-b) <= epsilon(abs(a)) ) .and. &
-            ( abs(a-b) <= epsilon(abs(b)) ) )
+              ( abs(a-b) <= epsilon(abs(b)) ) )
     almost_equal = ( ( test1 .and. test2 ) .or. ( (.not. test1) .and. test3 ) )
   end function almost_equal
 
-  function barycentric_weights(x) result(w)
+  pure function barycentric_weights(x) result(w)
     real(dp), dimension(:), intent(in) :: x
     real(dp), dimension(size(x))       :: w
     integer :: j, k, N
@@ -856,7 +1102,7 @@ contains
         D(i,i,k) = zero
         do j = 1,N
           if (j/=i) then
-            D(i,j,k) = ( real(k,dp) / (x(i) - x(j)) )                          &
+            D(i,j,k) = ( real(k,dp) / (x(i) - x(j)) )        &
                      * ( w(j)/w(i)*D(i,i,k-1) - D(i,j,k-1) )
             D(i,i,k) = D(i,i,k) - D(i,j,k)
           end if
@@ -865,38 +1111,8 @@ contains
     end do
   end function mth_order_polynomial_derivative_matrix
 
-  subroutine generate_1D_barycentric_info(N)
-    use linspace_helper, only : linspace
-    integer, intent(in), optional :: N
-    integer :: j
-    real(dp) :: x1 = -one, x2 = one
-    if ( present(N) ) then
-      if ( N > Nmax ) then
-        Nmax = N
-        continue
-      end if
-    end if
-    if ( allocated(Dmat) ) deallocate(Dmat)
-    if ( allocated(xb) )   deallocate(xb)
-    if ( allocated(wb) )   deallocate(wb)
-    allocate( Dmat(Nmax,Nmax,Nmax,2), xb(Nmax,Nmax), wb(Nmax,Nmax) )
-    Dmat = zero; xb = zero; wb = zero
-    wb(1,1) = one
-    do j = 2,Nmax
-      ! call linspace(x1,x2,xb(1:j,j))
-      xb(1:j,j) = linspace(j,x1,x2)
-      wb(1:j,j) = barycentric_weights( xb(1:j,j) )
-      Dmat(1:j,1:j,j,:) = mth_order_polynomial_derivative_matrix( xb(1:j,j), wb(1:j,j), 2 )
-    end do
-  end subroutine generate_1D_barycentric_info
-
-  subroutine destroy_1D_barycentric_info
-    if ( allocated(Dmat) ) deallocate(Dmat)
-    if ( allocated(xb) ) deallocate(xb)
-    if ( allocated(wb) ) deallocate(wb)
-  end subroutine destroy_1D_barycentric_info
-
-  pure subroutine lagbary(x,dir,fval,Npts,val)
+  pure subroutine lagbary(this,x,dir,fval,Npts,val)
+    class(interpolant_t),    intent(in)  :: this
     real(dp),               intent(in)  :: x
     integer,                intent(in)  :: dir
     integer,  dimension(:), intent(in)  :: Npts
@@ -905,23 +1121,23 @@ contains
     real(dp) :: A, F
     real(dp) :: x1, t1
     integer :: j, N
-    A = zero
-    F = zero
+    A = zero; F = zero
     N = Npts(dir)
     do j = 1,N
-      x1 = xb(j,N) - x
+      x1 = this%xb(j,N) - x
       if ( almost_equal(x1,zero) ) then
         val = fval(j)
         return
       end if
-      t1 = wb(j,N)/x1
+      t1 = this%wb(j,N)/x1
       A = A + t1 * fval(j)
       F = F + t1
     end do
     val = A/F
   end subroutine lagbary
 
-  pure subroutine lagbary_wderiv(x,dir,fval,Npts,val,dval)
+  pure subroutine lagbary_wderiv(this,x,dir,fval,Npts,val,dval)
+    class(interpolant_t),    intent(in)  :: this
     real(dp),               intent(in)  :: x
     integer,                intent(in)  :: dir
     integer,  dimension(:), intent(in)  :: Npts
@@ -930,19 +1146,16 @@ contains
     real(dp) :: A, B, C, F
     real(dp) :: x1, t1, t2, FF, AC
     integer :: j, N
-    A = zero
-    B = zero
-    C = zero
-    F = zero
+    A = zero; B = zero; C = zero; F = zero
     N = Npts(dir)
     do j = 1,N
-      x1 = xb(j,N) - x
+      x1 = this%xb(j,N) - x
       if ( almost_equal(x1,zero) ) then
         val = fval(j)
-        dval = dot_product( Dmat(j,1:N,N,1), fval )
+        dval = dot_product( this%Dmat(j,1:N,N,1), fval )
         return
       end if
-      t1 = wb(j,N)/x1
+      t1 = this%wb(j,N)/x1
       A = A + t1 * fval(j)
       F = F + t1
       t2 = t1/x1
@@ -955,7 +1168,8 @@ contains
     dval = (B * F - AC)/FF
   end subroutine lagbary_wderiv
 
-  pure subroutine lagbary_wderiv2(x,dir,fval,Npts,val,dval,d2val)
+  pure subroutine lagbary_wderiv2(this,x,dir,fval,Npts,val,dval,d2val)
+    class(interpolant_t),    intent(in)  :: this
     real(dp),               intent(in)  :: x
     integer,                intent(in)  :: dir
     integer,  dimension(:), intent(in)  :: Npts
@@ -964,22 +1178,17 @@ contains
     real(dp) :: A, B, C, D, E, F
     real(dp) :: x1, t1, t2, t3, FF, AC
     integer :: j, N
-    A = zero
-    B = zero
-    C = zero
-    D = zero
-    E = zero
-    F = zero
+    A = zero; B = zero; C = zero; D = zero; E = zero; F = zero
     N = Npts(dir)
     do j = 1,N
-      x1 = xb(j,N) - x
+      x1 = this%xb(j,N) - x
       if ( almost_equal(x1,zero) ) then
         val   = fval(j)
-        dval  = dot_product( Dmat(j,1:N,N,1), fval )
-        d2val = dot_product( Dmat(j,1:N,N,2), fval )
+        dval  = dot_product( this%Dmat(j,1:N,N,1), fval )
+        d2val = dot_product( this%Dmat(j,1:N,N,2), fval )
         return
       end if
-      t1 = wb(j,N)/x1
+      t1 = this%wb(j,N)/x1
       A = A + t1 * fval(j)
       F = F + t1
       t2 = t1/x1
@@ -993,11 +1202,14 @@ contains
     FF = F*F
     AC = A*C
     dval = (B * F - AC)/FF
-    d2val = ( two * D ) / F - ( two * E * A ) / FF - ( two * B * C ) / FF      &
+    d2val = ( two * D      ) / F          &
+          - ( two * E * A  ) / FF         &
+          - ( two * B * C  ) / FF         &
           + ( two * C * AC ) / ( FF * F )
   end subroutine lagbary_wderiv2
 
-  pure subroutine lagbary_2D(x,fval,Npts,val)
+  pure subroutine lagbary_2D(this,x,fval,Npts,val)
+    class(interpolant_t),      intent(in)  :: this
     real(dp), dimension(2),   intent(in)  :: x
     real(dp), dimension(:,:), intent(in)  :: fval
     integer,  dimension(2),   intent(in)  :: Npts
@@ -1005,12 +1217,13 @@ contains
     real(dp), dimension(size(fval,2)) :: tmp
     integer :: j
     do j = 1,Npts(2)
-      call lagbary( x(1), 1, fval(:,j), Npts, tmp(j) )
+      call this%lagbary( x(1), 1, fval(:,j), Npts, tmp(j) )
     end do
-    call lagbary( x(2), 2, tmp, Npts, val )
+    call this%lagbary( x(2), 2, tmp, Npts, val )
   end subroutine lagbary_2D
 
-  pure subroutine lagbary_2D_wgrad(x,fval,Npts,val,grad)
+  pure subroutine lagbary_2D_wgrad(this,x,fval,Npts,val,grad)
+    class(interpolant_t),      intent(in)  :: this
     real(dp), dimension(2),   intent(in)  :: x
     real(dp), dimension(:,:), intent(in)  :: fval
     integer,  dimension(2),   intent(in)  :: Npts
@@ -1019,13 +1232,14 @@ contains
     real(dp), dimension(size(fval,2)) :: tmp, gtmp
     integer :: j
     do j = 1,Npts(2)
-      call lagbary_wderiv( x(1), 1, fval(:,j), Npts, tmp(j), gtmp(j) )
+      call this%lagbary_wderiv( x(1), 1, fval(:,j), Npts, tmp(j), gtmp(j) )
     end do
-    call lagbary_wderiv( x(2), 2,  tmp, Npts, val, grad(2) )
-    call lagbary(        x(2), 2, gtmp, Npts,      grad(1) )
+    call this%lagbary_wderiv( x(2), 2,  tmp, Npts, val, grad(2) )
+    call this%lagbary(        x(2), 2, gtmp, Npts,      grad(1) )
   end subroutine lagbary_2D_wgrad
 
-  pure subroutine lagbary_2D_whess(x,fval,Npts,val,grad,hess)
+  pure subroutine lagbary_2D_whess(this,x,fval,Npts,val,grad,hess)
+    class(interpolant_t),      intent(in)  :: this
     real(dp), dimension(2),   intent(in)  :: x
     real(dp), dimension(:,:), intent(in)  :: fval
     integer,  dimension(2),   intent(in)  :: Npts
@@ -1035,14 +1249,15 @@ contains
     real(dp), dimension(size(fval,2)) :: tmp, gtmp, htmp
     integer :: j
     do j = 1,Npts(2)
-      call lagbary_wderiv2( x(1), 1, fval(:,j), Npts, tmp(j), gtmp(j), htmp(j) )
+      call this%lagbary_wderiv2( x(1), 1, fval(:,j), Npts, tmp(j), gtmp(j), htmp(j) )
     end do
-    call lagbary_wderiv2( x(2), 2,  tmp, Npts, val, grad(2), hess(3) )
-    call lagbary_wderiv(  x(2), 2, gtmp, Npts,      grad(1), hess(2) )
-    call lagbary(         x(2), 2, htmp, Npts,               hess(1) )
+    call this%lagbary_wderiv2( x(2), 2,  tmp, Npts, val, grad(2), hess(3) )
+    call this%lagbary_wderiv(  x(2), 2, gtmp, Npts,      grad(1), hess(2) )
+    call this%lagbary(         x(2), 2, htmp, Npts,               hess(1) )
   end subroutine lagbary_2D_whess
 
-  pure subroutine lagbary_3D(x,fval,Npts,val)
+  pure subroutine lagbary_3D(this,x,fval,Npts,val)
+    class(interpolant_t),        intent(in)  :: this
     real(dp), dimension(3),     intent(in)  :: x
     real(dp), dimension(:,:,:), intent(in)  :: fval
     integer,  dimension(3),     intent(in)  :: Npts
@@ -1052,16 +1267,17 @@ contains
     integer :: k, j
     do k = 1,Npts(3)
       do j = 1,Npts(2)
-        call lagbary( x(1), 1, fval(:,j,k), Npts, tmp(j,k) )
+        call this%lagbary( x(1), 1, fval(:,j,k), Npts, tmp(j,k) )
       end do
     end do
     do k = 1,Npts(3)
-      call lagbary( x(2), 2, tmp(:,k), Npts, tmp2(k) )
+      call this%lagbary( x(2), 2, tmp(:,k), Npts, tmp2(k) )
     end do
-    call lagbary( x(3), 3, tmp2, Npts, val )
+    call this%lagbary( x(3), 3, tmp2, Npts, val )
   end subroutine lagbary_3D
 
-  pure subroutine lagbary_3D_wgrad(x,fval,Npts,val,grad)
+  pure subroutine lagbary_3D_wgrad(this,x,fval,Npts,val,grad)
+    class(interpolant_t),        intent(in)  :: this
     real(dp), dimension(3),     intent(in)  :: x
     real(dp), dimension(:,:,:), intent(in)  :: fval
     integer,  dimension(3),     intent(in)  :: Npts
@@ -1072,19 +1288,20 @@ contains
     integer :: k, j
     do k = 1,Npts(3)
       do j = 1,Npts(2)
-        call lagbary_wderiv( x(1), 1, fval(:,j,k), Npts, tmp(j,k), gtmp0(j,k) )
+        call this%lagbary_wderiv( x(1), 1, fval(:,j,k), Npts, tmp(j,k), gtmp0(j,k) )
       end do
     end do
     do k = 1,Npts(3)
-      call lagbary_wderiv( x(2), 2,   tmp(:,k), Npts, tmp2(k), gtmp2(k) )
-      call lagbary(        x(2), 2, gtmp0(:,k), Npts, gtmp1(k) )
+      call this%lagbary_wderiv( x(2), 2,   tmp(:,k), Npts, tmp2(k), gtmp2(k) )
+      call this%lagbary(        x(2), 2, gtmp0(:,k), Npts, gtmp1(k) )
     end do
-    call lagbary_wderiv( x(3), 3,  tmp2, Npts, val, grad(3) )
-    call lagbary(        x(3), 3, gtmp2, Npts,      grad(2) )
-    call lagbary(        x(3), 3, gtmp1, Npts,      grad(1) )
+    call this%lagbary_wderiv( x(3), 3,  tmp2, Npts, val, grad(3) )
+    call this%lagbary(        x(3), 3, gtmp2, Npts,      grad(2) )
+    call this%lagbary(        x(3), 3, gtmp1, Npts,      grad(1) )
   end subroutine lagbary_3D_wgrad
 
-  pure subroutine lagbary_3D_whess(x,fval,Npts,val,grad,hess)
+  pure subroutine lagbary_3D_whess(this,x,fval,Npts,val,grad,hess)
+    class(interpolant_t),        intent(in)  :: this
     real(dp), dimension(3),     intent(in)  :: x
     real(dp), dimension(:,:,:), intent(in)  :: fval
     integer,  dimension(3),     intent(in)  :: Npts
@@ -1096,132 +1313,215 @@ contains
     integer :: k, j
     do k = 1,Npts(3)
       do j = 1,Npts(2)
-        call lagbary_wderiv2( x(1), 1, fval(:,j,k), Npts, tmp(j,k), gtmp(j,k), htmp(j,k) )
+        call this%lagbary_wderiv2( x(1), 1, fval(:,j,k), Npts, tmp(j,k), gtmp(j,k), htmp(j,k) )
       end do
     end do
     do k = 1,Npts(3)
-      call lagbary_wderiv2( x(2), 2,  tmp(:,k), Npts, tmp1(k), gtmp2(k), htmp3(k) )
-      call lagbary_wderiv(  x(2), 2, gtmp(:,k), Npts,          gtmp1(k), htmp2(k) )
-      call lagbary(         x(2), 2, htmp(:,k), Npts,                    htmp1(k) )
+      call this%lagbary_wderiv2( x(2), 2,  tmp(:,k), Npts, tmp1(k), gtmp2(k), htmp3(k) )
+      call this%lagbary_wderiv(  x(2), 2, gtmp(:,k), Npts,          gtmp1(k), htmp2(k) )
+      call this%lagbary(         x(2), 2, htmp(:,k), Npts,                    htmp1(k) )
     end do
-    call lagbary_wderiv2( x(3), 3,  tmp1, Npts, val, grad(3), hess(6) )
-    call lagbary_wderiv(  x(3), 3, gtmp2, Npts,      grad(2), hess(5) )
-    call lagbary(         x(3), 3, htmp3, Npts,               hess(4) )
-    call lagbary_wderiv(  x(3), 3, gtmp1, Npts,      grad(1), hess(3) )
-    call lagbary(         x(3), 3, htmp2, Npts,               hess(2) )
-    call lagbary(         x(3), 3, htmp1, Npts,               hess(1) )
+    call this%lagbary_wderiv2( x(3), 3,  tmp1, Npts, val, grad(3), hess(6) )
+    call this%lagbary_wderiv(  x(3), 3, gtmp2, Npts,      grad(2), hess(5) )
+    call this%lagbary(         x(3), 3, htmp3, Npts,               hess(4) )
+    call this%lagbary_wderiv(  x(3), 3, gtmp1, Npts,      grad(1), hess(3) )
+    call this%lagbary(         x(3), 3, htmp2, Npts,               hess(2) )
+    call this%lagbary(         x(3), 3, htmp1, Npts,               hess(1) )
   end subroutine lagbary_3D_whess
 
-  pure function covariant_base_vectors_3D(point,X1,X2,X3) result(a)
+  pure function calc_grid_metrics(this,point,X1,X2,X3) result(Ja)
+    use set_constants, only : zero
+    class(interpolant_t),       intent(in) :: this
     real(dp), dimension(3),     intent(in) :: point
     real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
-    real(dp), dimension(3,3) :: a
-    real(dp) :: junk
-    integer, dimension(3) :: Npts
-    Npts = shape(X1)
-    call lagbary_3D_wgrad(point,X1,Npts,junk,a(1,:))
-    call lagbary_3D_wgrad(point,X2,Npts,junk,a(2,:))
-    call lagbary_3D_wgrad(point,X3,Npts,junk,a(3,:))
-  end function covariant_base_vectors_3D
-
-  function contravariant_base_vectors_3D(point,X1,X2,X3) result(a)
-    real(dp), dimension(3),     intent(in) :: point
-    real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
-    real(dp), dimension(3,3) :: a
-    real(dp) :: J
-    a = calc_grid_metrics(point,X1,X2,X3)
-    J = jacobian_determinant_3D(point,X1,X2,X3)
-    a = a / J
-  end function contravariant_base_vectors_3D
-
-  function calc_grid_metrics(point,X1,X2,X3) result(Ja)
-    use pointers, only : array_ptr_3D_real
-    real(dp), dimension(3), intent(in) :: point
-    real(dp), dimension(:,:,:), intent(in), target :: X1, X2, X3
     real(dp), dimension(3,3) :: Ja
-    real(dp), dimension(size(X1,1),size(X1,2),size(X1,3)) :: X_l, X_m, tmp
-    type(array_ptr_3D_real), dimension(3) :: X
+    real(dp), dimension(size(X1,1),size(X1,2),size(X1,3),3) :: X
+    real(dp), dimension(size(X1,1),size(X1,2),size(X1,3))   :: tmp
+    real(dp), dimension(3) :: dX_l, dX_m, dd1, dd2, dd3
+    real(dp) :: junk
+    integer, dimension(3), parameter :: ijk = [1,2,3]
+    integer, dimension(3), parameter :: kij = cshift(ijk,1)
+    integer, dimension(3), parameter :: jki = cshift(kij,1)
     integer, dimension(3) :: Npts
     integer :: i
-    real(dp) :: junk
-    real(dp), dimension(3) :: dX_l, dX_m, dd1, dd2, dd3
     Ja = zero
-    X(1)%p => X1
-    X(2)%p => X2
-    X(3)%p => X3
     Npts = shape(X1)
-    do i = 1,3
-      X_l = X(mod(4+i,3)+1)%p
-      X_m = X(mod(3+i,3)+1)%p
-      call lagbary_3D_wgrad( point, X_l, Npts, junk, dX_l )
-      call lagbary_3D_wgrad( point, X_m, Npts, junk, dX_m )
-      tmp = X_l*dX_m(1) - X_m*dX_l(1)
-      call lagbary_3D_wgrad( point, tmp, Npts, junk, dd1 )
-      tmp = X_l*dX_m(2) - X_m*dX_l(2)
-      call lagbary_3D_wgrad( point, tmp, Npts, junk, dd2 )
-      tmp = X_l*dX_m(3) - X_m*dX_l(3)
-      call lagbary_3D_wgrad( point, tmp, Npts, junk, dd3 )
-      Ja(i,1) = -half*( dd3(2) - dd2(3) );
-      Ja(i,2) = -half*( dd1(3) - dd3(1) );
-      Ja(i,3) = -half*( dd2(1) - dd1(2) );
-    end do
-    nullify( X(1)%p, X(2)%p, X(3)%p ) ! may not be necessary
+    call this%lagbary_3D_wgrad( point, X3, Npts, junk, dX_l )
+    call this%lagbary_3D_wgrad( point, X2, Npts, junk, dX_m )
+    tmp = X3*dX_m(1) - X2*dX_l(1)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd1 )
+    tmp = X3*dX_m(2) - X2*dX_l(2)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd2 )
+    tmp = X3*dX_m(3) - X2*dX_l(3)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd3 )
+    Ja(1,1) = -half*( dd3(2) - dd2(3) );
+    Ja(1,2) = -half*( dd1(3) - dd3(1) );
+    Ja(1,3) = -half*( dd2(1) - dd1(2) );
+
+    call this%lagbary_3D_wgrad( point, X1, Npts, junk, dX_l )
+    call this%lagbary_3D_wgrad( point, X3, Npts, junk, dX_m )
+    tmp = X1*dX_m(1) - X3*dX_l(1)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd1 )
+    tmp = X1*dX_m(2) - X3*dX_l(2)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd2 )
+    tmp = X1*dX_m(3) - X3*dX_l(3)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd3 )
+    Ja(2,1) = -half*( dd3(2) - dd2(3) );
+    Ja(2,2) = -half*( dd1(3) - dd3(1) );
+    Ja(2,3) = -half*( dd2(1) - dd1(2) );
+
+    call this%lagbary_3D_wgrad( point, X2, Npts, junk, dX_l )
+    call this%lagbary_3D_wgrad( point, X1, Npts, junk, dX_m )
+    tmp = X2*dX_m(1) - X1*dX_l(1)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd1 )
+    tmp = X2*dX_m(2) - X1*dX_l(2)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd2 )
+    tmp = X2*dX_m(3) - X1*dX_l(3)
+    call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd3 )
+    Ja(3,1) = -half*( dd3(2) - dd2(3) );
+    Ja(3,2) = -half*( dd1(3) - dd3(1) );
+    Ja(3,3) = -half*( dd2(1) - dd1(2) );
   end function calc_grid_metrics
 
+  pure function calc_grid_metrics_alt(this,point,X1,X2,X3) result(Ja)
+    use set_constants, only : zero
+    class(interpolant_t),       intent(in) :: this
+    real(dp), dimension(3),     intent(in) :: point
+    real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
+    real(dp), dimension(3,3) :: Ja
+    real(dp), dimension(size(X1,1),size(X1,2),size(X1,3),3) :: X
+    real(dp), dimension(size(X1,1),size(X1,2),size(X1,3))   :: tmp
+    real(dp), dimension(3) :: dX_l, dX_m, dd1, dd2, dd3
+    real(dp) :: junk
+    integer, dimension(3), parameter :: ijk = [1,2,3]
+    integer, dimension(3), parameter :: kij = cshift(ijk,1)
+    integer, dimension(3), parameter :: jki = cshift(kij,1)
+    integer, dimension(3) :: Npts
+    integer :: i
+    Ja = zero
+    X(:,:,:,1) = X1
+    X(:,:,:,2) = X2
+    X(:,:,:,3) = X3
+    Npts = shape(X1)
+    do i = 1,3
+      associate( l => kij(i), m => jki(i) )
+        associate( X_l => X(:,:,:,l), X_m => X(:,:,:,m) )
+          call this%lagbary_3D_wgrad( point, X_l, Npts, junk, dX_l )
+          call this%lagbary_3D_wgrad( point, X_m, Npts, junk, dX_m )
+          tmp = X_l*dX_m(1) - X_m*dX_l(1)
+          call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd1 )
+          tmp = X_l*dX_m(2) - X_m*dX_l(2)
+          call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd2 )
+          tmp = X_l*dX_m(3) - X_m*dX_l(3)
+          call this%lagbary_3D_wgrad( point, tmp, Npts, junk, dd3 )
+          Ja(i,1) = -half*( dd3(2) - dd2(3) );
+          Ja(i,2) = -half*( dd1(3) - dd3(1) );
+          Ja(i,3) = -half*( dd2(1) - dd1(2) );
+        end associate
+      end associate
+    end do
+  end function calc_grid_metrics_alt
 
-  pure function normal_vectors(point,X1,X2,X3) result(Nvec)
-    use math, only : cross_product, vector_norm
-    implicit none
-    real(dp), dimension(3), intent(in) :: point
+  pure function normal_vectors(this,point,X1,X2,X3) result(Nvec)
+    use math, only : cross_product
+    class(interpolant_t),       intent(in) :: this
+    real(dp), dimension(3),     intent(in) :: point
     real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
     real(dp), dimension(3,3) :: Nvec
-    integer, dimension(3) :: Npts
-    real(dp), dimension(3,3) :: A
-    real(dp) :: junk
-    Npts = shape(X1)
-    call lagbary_3D_wgrad(point,X1,Npts,junk,A(:,1))
-    call lagbary_3D_wgrad(point,X2,Npts,junk,A(:,2))
-    call lagbary_3D_wgrad(point,X3,Npts,junk,A(:,3))
-
-    Nvec(:,1) = cross_product(A(:,2),A(:,3))
-    Nvec(:,2) = cross_product(A(:,1),A(:,3))
-    Nvec(:,3) = cross_product(A(:,1),A(:,2))
-
-    Nvec(:,1) = Nvec(:,1)/vector_norm(Nvec(:,1))
-    Nvec(:,2) = Nvec(:,2)/vector_norm(Nvec(:,2))
-    Nvec(:,3) = Nvec(:,3)/vector_norm(Nvec(:,3))
+    Nvec = this%calc_grid_metrics(point,X1,X2,X3)
+    Nvec(:,1) = Nvec(:,1)/norm2(Nvec(:,1))
+    Nvec(:,2) = Nvec(:,2)/norm2(Nvec(:,2))
+    Nvec(:,3) = Nvec(:,3)/norm2(Nvec(:,3))
   end function normal_vectors
 
-  pure function jacobian_determinant_2D(point,X1,X2,X3) result(Jac)
-    implicit none
-    real(dp), dimension(2), intent(in) :: point
-    real(dp), dimension(:,:), intent(in) :: X1, X2, X3
-    real(dp) :: Jac, junk
-    integer, dimension(2) :: Npts
-    real(dp), dimension(2,3) :: A
+  pure subroutine map_point_3D_curve(this,point,X1,X2,X3,xyz,dS)
+    class(interpolant_t),   intent(in)  :: this
+    real(dp), dimension(1), intent(in)  :: point ! [t]
+    real(dp), dimension(:), intent(in)  :: X1, X2, X3
+    real(dp), dimension(3), intent(out) :: xyz
+    real(dp),               intent(out) :: dS
+    integer,  dimension(1) :: Npts
+    real(dp), dimension(3) :: dval
     Npts = shape(X1)
-    call lagbary_2D_wgrad(point,X1,Npts,junk,A(:,1))
-    call lagbary_2D_wgrad(point,X2,Npts,junk,A(:,2))
-    call lagbary_2D_wgrad(point,X3,Npts,junk,A(:,3))
-    Jac = A(1,1)*A(2,2) - A(1,2)*A(2,1)
-  end function jacobian_determinant_2D
+    call this%lagbary_wderiv(point(1),1,X1,Npts,xyz(1),dval(1))
+    call this%lagbary_wderiv(point(1),1,X2,Npts,xyz(2),dval(2))
+    call this%lagbary_wderiv(point(1),1,X3,Npts,xyz(3),dval(3))
+    dS = norm2(dval)
+  end subroutine map_point_3D_curve
 
-  pure function jacobian_determinant_3D(point,X1,X2,X3) result(Jac)
-    implicit none
-    real(dp), dimension(3), intent(in) :: point
-    real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
-    real(dp) :: Jac, junk
+  pure subroutine map_point_3D_surface(this,point,X1,X2,X3,xyz,dS)
+    use math, only : cross_product
+    class(interpolant_t),     intent(in)  :: this
+    real(dp), dimension(2),   intent(in)  :: point ! [u,v]
+    real(dp), dimension(:,:), intent(in)  :: X1, X2, X3
+    real(dp), dimension(3),   intent(out) :: xyz
+    real(dp),                 intent(out) :: dS
+    integer,  dimension(2) :: Npts
+    real(dp), dimension(2) :: tmp
+    real(dp), dimension(3) :: drdu, drdv
+    Npts = shape(X1)
+    call this%lagbary_2D_wgrad(point,X1,Npts,xyz(1),tmp)
+    drdu(1) = tmp(1); drdv(1) = tmp(2)
+    call this%lagbary_2D_wgrad(point,X2,Npts,xyz(2),tmp)
+    drdu(2) = tmp(1); drdv(2) = tmp(2)
+    call this%lagbary_2D_wgrad(point,X3,Npts,xyz(3),tmp)
+    drdu(3) = tmp(1); drdv(3) = tmp(2)
+    dS = norm2( cross_product(drdu,drdv) )
+  end subroutine map_point_3D_surface
+
+  pure subroutine map_point_3D_volume(this,point,X1,X2,X3,xyz,dS)
+    use math, only : det_3x3
+    class(interpolant_t),       intent(in)  :: this
+    real(dp), dimension(3),     intent(in)  :: point ! [xi,eta,zeta]
+    real(dp), dimension(:,:,:), intent(in)  :: X1, X2, X3
+    real(dp), dimension(3),     intent(out) :: xyz
+    real(dp),                   intent(out) :: dS
     integer, dimension(3) :: Npts
     real(dp), dimension(3,3) :: A
     Npts = shape(X1)
-    call lagbary_3D_wgrad(point,X1,Npts,junk,A(:,1))
-    call lagbary_3D_wgrad(point,X2,Npts,junk,A(:,2))
-    call lagbary_3D_wgrad(point,X3,Npts,junk,A(:,3))
-    Jac = A(1,1)*A(2,2)*A(3,3) + A(2,1)*A(3,2)*A(1,3) + A(3,1)*A(1,2)*A(2,3) &
-        - A(3,1)*A(2,2)*A(1,3) - A(2,1)*A(1,2)*A(3,3) - A(1,1)*A(3,2)*A(2,3)
-  end function jacobian_determinant_3D
+    call this%lagbary_3D_wgrad(point,X1,Npts,xyz(1),A(:,1))
+    call this%lagbary_3D_wgrad(point,X2,Npts,xyz(2),A(:,2))
+    call this%lagbary_3D_wgrad(point,X3,Npts,xyz(3),A(:,3))
+    dS = det_3x3(A)
+  end subroutine map_point_3D_volume
 
-end module lagrange_interpolation
+  ! pure subroutine map_point_3D(this,point,X1,X2,X3,xyz,dS,status)
+  !   use set_constants, only : zero
+  !   class(interpolant_t),    intent(in)  :: this
+  !   real(dp), dimension(:),  intent(in)  :: point
+  !   real(dp), dimension(..), intent(in)  :: X1, X2, X3
+  !   real(dp), dimension(3),  intent(out) :: xyz
+  !   real(dp),                intent(out) :: dS
+  !   integer, optional,       intent(out) :: status
+
+  !   select rank(X1)
+  !   rank(0)
+  !     select rank(X2); rank(0); select rank(X3); rank(0)
+  !       xyz = [X1,X2,X3]
+  !       dS  = zero
+  !     end select; end select
+  !     if (present(status)) status = 0; return
+  !   rank(1)
+  !     select rank(X2); rank(1); select rank(X3); rank(1)
+  !       call map_point_3D_curve(this,point,X1,X2,X3,xyz,dS)
+  !     end select; end select
+  !   rank(2)
+  !     select rank(X2); rank(2); select rank(X3); rank(2) 
+  !       call map_point_3D_surface(this,point,X1,X2,X3,xyz,dS)
+  !     end select; end select
+  !   rank(3)
+  !     select rank(X2); rank(3); select rank(X3); rank(3) 
+  !       call map_point_3D_volume(this,point,X1,X2,X3,xyz,dS)
+  !     end select; end select
+  !   rank default
+  !     xyz = zero
+  !     dS  = zero
+  !     if (present(status)) status = -1; return
+  !   end select
+  !   if (present(status)) status = 1
+  ! end subroutine map_point_3D
+
+end module interpolant_derived_type
 
 module quadrature_derived_type
 
@@ -1232,9 +1532,10 @@ module quadrature_derived_type
   public :: quad_t
   public :: quad_ptr, quad_ptr_3D
   public :: create_quad_ref_1D, create_quad_ref_2D, create_quad_ref_3D
-  public :: map_quad_ref_to_physical_1D
-  public :: map_quad_ref_to_physical_2D
-  public :: map_quad_ref_to_physical_3D
+  public :: map_quad_ref_to_physical
+  ! public :: map_quad_ref_to_physical_1D
+  ! public :: map_quad_ref_to_physical_2D
+  ! public :: map_quad_ref_to_physical_3D
   type quad_t
     integer :: n_quad = 0
     real(dp), allocatable, dimension(:,:) :: quad_pts
@@ -1384,116 +1685,102 @@ contains
     end do
   end subroutine create_quad_ref_3D
 
-  pure subroutine map_quad_ref_to_physical_1D( x1nodes, x2nodes, x3nodes,      &
-                                               quad_ref, quad_physical )
-    use set_constants,           only : zero, half
-    use math,                    only : vector_norm
-    use lagrange_interpolation,  only : lagbary_wderiv
-
-    real(dp), dimension(:), intent(in)    :: x1nodes, x2nodes, x3nodes
+  pure subroutine map_quad_ref_to_physical_1D( X1, X2, X3, interpolant, quad_ref, quad_physical )
+    use interpolant_derived_type, only : interpolant_t
+    real(dp), dimension(:), intent(in)  :: X1, X2, X3
+    type(interpolant_t),    intent(in)  :: interpolant
     type(quad_t),           intent(in)  :: quad_ref
     type(quad_t),           intent(out) :: quad_physical
-    integer  :: n, i
-    integer, dimension(1) :: Npts
-    real(dp) :: det_jac
-    real(dp), dimension(3) :: node_diff
-
-    real(dp), dimension(3) :: tangent, normal, binormal
-    real(dp) :: kappa
-
-    continue
-    Npts = shape(x1nodes)
-
-    if( quad_ref%n_quad /= quad_physical%n_quad ) then
-      call quad_physical%destroy()
-      call quad_physical%create(quad_ref%n_quad)
-    end if
-
-    quad_physical%quad_pts = zero
+    real(dp) :: dS
+    integer  :: n
+    call quad_physical%create(quad_ref%n_quad)
     do n = 1,quad_ref%n_quad
-      call lagbary_wderiv( quad_ref%quad_pts(1,n), 1, x1nodes, Npts, &
-                           quad_physical%quad_pts(1,n), node_diff(1) )
-      call lagbary_wderiv( quad_ref%quad_pts(1,n), 1, x2nodes, Npts, &
-                           quad_physical%quad_pts(2,n), node_diff(2) )
-      call lagbary_wderiv( quad_ref%quad_pts(1,n), 1, x3nodes, Npts, &
-                           quad_physical%quad_pts(3,n), node_diff(3) )
-      det_jac = vector_norm(node_diff)
-      quad_physical%quad_wts(n) = det_jac * quad_ref%quad_wts(n)
-
+      call interpolant%map_point_3D_curve( [quad_ref%quad_pts(1,n)], X1, X2, X3, quad_physical%quad_pts(:,n), dS )
+      quad_physical%quad_wts(n) = dS * quad_ref%quad_wts(n)
     end do
   end subroutine map_quad_ref_to_physical_1D
 
-  pure subroutine map_quad_ref_to_physical_2D( x1nodes, x2nodes, x3nodes,    &
-                                                  quad_ref, quad_physical )
-    use set_constants,           only : zero
-    use lagrange_interpolation,  only : lagbary_2D, jacobian_determinant
-
-    real(dp),     dimension(:,:), intent(in)  :: x1nodes, x2nodes, x3nodes
-    type(quad_t),                 intent(in)  :: quad_ref
-    type(quad_t),                 intent(out) :: quad_physical
+  pure subroutine map_quad_ref_to_physical_2D( X1, X2, X3, interpolant, quad_ref, quad_physical )
+    use interpolant_derived_type, only : interpolant_t
+    real(dp), dimension(:,:), intent(in)  :: X1, X2, X3
+    type(interpolant_t),      intent(in)  :: interpolant
+    type(quad_t),             intent(in)  :: quad_ref
+    type(quad_t),             intent(out) :: quad_physical
+    real(dp) :: dA
     integer  :: n
-    real(dp) :: det_jac
-    integer,      dimension(2) :: Npts
-    continue
-
-    Npts = shape(x1nodes)
-    if( quad_ref%n_quad /= quad_physical%n_quad ) then
-      call quad_physical%destroy()
-      call quad_physical%create(quad_ref%n_quad)
-    end if
-
-    quad_physical%quad_pts = zero
+    call quad_physical%create(quad_ref%n_quad)
     do n = 1,quad_ref%n_quad
-      call lagbary_2D( quad_ref%quad_pts(1:2,n), x1nodes, Npts, &
-                  quad_physical%quad_pts(  1,n) )
-      call lagbary_2D( quad_ref%quad_pts(1:2,n), x2nodes, Npts, &
-                  quad_physical%quad_pts(  2,n) )
-      call lagbary_2D( quad_ref%quad_pts(1:2,n), x3nodes, Npts, &
-                  quad_physical%quad_pts(  3,n) )
-      det_jac = jacobian_determinant( quad_ref%quad_pts(1:2,n), &
-                  x1nodes, x2nodes, x3nodes )
-      quad_physical%quad_wts(n) = abs(det_jac) * quad_ref%quad_wts(n)
+      call interpolant%map_point_3D_surface( quad_ref%quad_pts(1:2,n), X1, X2, X3, quad_physical%quad_pts(:,n), dA )
+      quad_physical%quad_wts(n) = dA * quad_ref%quad_wts(n)
     end do
   end subroutine map_quad_ref_to_physical_2D
 
-  pure subroutine map_quad_ref_to_physical_3D( x1nodes, x2nodes, x3nodes,    &
-                                                  quad_ref, quad_physical )
-    use set_constants,           only : zero
-    use lagrange_interpolation,  only : lagbary_3D, jacobian_determinant
-    real(dp), dimension(:,:,:), intent(in)  :: x1nodes, x2nodes, x3nodes
+  pure subroutine map_quad_ref_to_physical_3D( X1, X2, X3, interpolant, quad_ref, quad_physical )
+    use interpolant_derived_type, only : interpolant_t
+    real(dp), dimension(:,:,:), intent(in)  :: X1, X2, X3
+    type(interpolant_t),        intent(in)  :: interpolant
     type(quad_t),               intent(in)  :: quad_ref
     type(quad_t),               intent(out) :: quad_physical
+    real(dp) :: dV
     integer  :: n
-    real(dp) :: det_jac
-    integer,  dimension(3) :: Npts
-    continue
-
-    Npts = shape(x1nodes)
-    if( quad_ref%n_quad /= quad_physical%n_quad ) then
-      call quad_physical%destroy()
-      call quad_physical%create(quad_ref%n_quad)
-    end if
-
-    quad_physical%quad_pts = zero
+    call quad_physical%create(quad_ref%n_quad)
     do n = 1,quad_ref%n_quad
-      call lagbary_3D( quad_ref%quad_pts(:,n), x1nodes, Npts, &
-                      quad_physical%quad_pts(  1,n) )
-      call lagbary_3D( quad_ref%quad_pts(:,n), x2nodes, Npts, &
-                      quad_physical%quad_pts(  2,n) )
-      call lagbary_3D( quad_ref%quad_pts(:,n), x3nodes, Npts, &
-                      quad_physical%quad_pts(  3,n) )
-      det_jac = jacobian_determinant( quad_ref%quad_pts(:,n), &
-                                      x1nodes, x2nodes, x3nodes )
-      quad_physical%quad_wts(n) = det_jac * quad_ref%quad_wts(n)
+      call interpolant%map_point_3D_volume( quad_ref%quad_pts(1:3,n), X1, X2, X3, quad_physical%quad_pts(:,n), dV )
+      quad_physical%quad_wts(n) = dV * quad_ref%quad_wts(n)
     end do
   end subroutine map_quad_ref_to_physical_3D
-end module quadrature_derived_type
 
+
+
+  pure subroutine map_quad_ref_to_physical( X1, X2, X3, loc, interpolant, quad_ref, quad_physical, status )
+    use set_constants,                        only : zero
+    use index_conversion,                     only : get_reshape_indices
+    use reshape_array,                        only : extract_1D_slice_from_3D_array, extract_2D_slice_from_3D_array
+    use interpolant_derived_type, only : interpolant_t
+    real(dp), dimension(:,:,:), intent(in)  :: X1, X2, X3
+    integer,  dimension(3),     intent(in)  :: loc
+    type(interpolant_t),        intent(in)  :: interpolant
+    type(quad_t),               intent(in)  :: quad_ref
+    type(quad_t),               intent(out) :: quad_physical
+    integer, optional,          intent(out) :: status
+    real(dp), allocatable, dimension(:,:) :: X1_tmp, X2_tmp, X3_tmp
+    integer, dimension(3) :: idx_start, idx_end, sz_in, sz_out
+    integer  :: sz_cnt
+    if (present(status)) status = 1
+    sz_in = shape(X1)
+    call get_reshape_indices(sz_in, loc, sz_out, sz_cnt, idx_start, idx_end )
+    select case(sz_cnt)
+    case(1)
+      allocate( X1_tmp(sz_out(1),1), X2_tmp(sz_out(1),1), X3_tmp(sz_out(1),1) )
+      X1_tmp(:,1) = extract_1D_slice_from_3D_array(X1,idx_start,idx_end,sz_out(1))
+      X2_tmp(:,1) = extract_1D_slice_from_3D_array(X2,idx_start,idx_end,sz_out(1))
+      X3_tmp(:,1) = extract_1D_slice_from_3D_array(X3,idx_start,idx_end,sz_out(1))
+      call map_quad_ref_to_physical_1D(X1_tmp(:,1),X2_tmp(:,1),X3_tmp(:,1),interpolant,quad_ref,quad_physical)
+    case(2)
+      allocate( X1_tmp(sz_out(1),sz_out(2)), X2_tmp(sz_out(1),sz_out(2)), X3_tmp(sz_out(1),sz_out(2)) )
+      X1_tmp = extract_2D_slice_from_3D_array(X1,idx_start,idx_end,sz_out(1:2))
+      X2_tmp = extract_2D_slice_from_3D_array(X2,idx_start,idx_end,sz_out(1:2))
+      X3_tmp = extract_2D_slice_from_3D_array(X3,idx_start,idx_end,sz_out(1:2))
+      call map_quad_ref_to_physical_2D(X1_tmp,X2_tmp,X3_tmp,interpolant,quad_ref,quad_physical)
+    case(3)
+      call map_quad_ref_to_physical_3D(X1,X2,X3,interpolant,quad_ref,quad_physical)
+    case default
+      if (present(status)) status = -1
+    end select
+
+    if ( allocated(X1_tmp) ) deallocate( X1_tmp )
+    if ( allocated(X2_tmp) ) deallocate( X2_tmp )
+    if ( allocated(X3_tmp) ) deallocate( X3_tmp )
+
+  end subroutine map_quad_ref_to_physical
+
+end module quadrature_derived_type
 module grid_derived_type
   use set_precision,           only : dp
   use quadrature_derived_type, only : quad_t, quad_ptr_3D
   use vector_derived_type,     only : face_vec, face_vec_ptr_3D
   use pointers,                only : array_ptr_3D_real, array_ptr_4D_real
+  use interpolant_derived_type, only : interpolant_t
   implicit none
   private
   public :: derived_grid_vars
@@ -1523,6 +1810,7 @@ module grid_derived_type
     type(face_vec_ptr_3D),       dimension(3)       :: normals
     integer, dimension(:), pointer :: n_cells, n_ghost
     integer,               pointer :: n_dim
+    type(interpolant_t) :: interp
   contains
     private
     procedure, public, pass :: setup   =>   allocate_derived_grid
@@ -1646,6 +1934,7 @@ contains
 
   subroutine allocate_derived_grid( this, gblock )
     use set_constants,  only : zero
+    use interpolant_derived_type, only : interpolant_t
     class(derived_grid_vars), target, intent(inout)   :: this
     class(grid_block),       target, intent(inout) :: gblock
     integer, dimension(3) :: lo, hi
@@ -1678,7 +1967,9 @@ contains
     this%eta_area  = zero
     this%zeta_area = zero
 
-    call compute_quadrature_points( gblock, gblock, [1,1,1], 2 )
+    this%interp = interpolant_t(N=10)
+
+    call compute_quadrature_points( gblock, gblock, [1,1,1], 4 )
 
     this%face_quads(1)%p => this%xi_face_quad
     this%face_quads(2)%p => this%eta_face_quad
@@ -1688,60 +1979,30 @@ contains
     this%normals(3)%p    => this%zeta_nv
   end subroutine allocate_derived_grid
 
-  pure subroutine map_cell_quad_points( dim, n_skip, quad_order, coords, mask, ref_quads, quad )
-    use quadrature_derived_type, only : map_quad_ref_to_physical_1D,           &
-                                        map_quad_ref_to_physical_2D,           &
-                                        map_quad_ref_to_physical_3D
-    integer,                                                        intent(in)    :: quad_order, dim
-    integer,      dimension(3),                                     intent(in)    :: n_skip
-    real(dp),     dimension(n_skip(1)+1,n_skip(1)+1,n_skip(1)+1,3), intent(in)    :: coords
-    logical,      dimension(n_skip(1)+1,n_skip(1)+1,n_skip(1)+1),   intent(in)    :: mask
-    type(quad_t), dimension(3),                                     intent(in)    :: ref_quads
-    type(quad_t),                                                   intent(inout) :: quad
-    real(dp),     dimension(product(n_skip+1)) :: Xtmp, Ytmp, Ztmp
-    integer :: n_mask, n_quad
-
-    n_mask = count(mask)
-
-    n_quad = ref_quads(1)%n_quad
-
-    Xtmp(1:n_mask) = pack(coords(:,:,:,1),mask)
-    Ytmp(1:n_mask) = pack(coords(:,:,:,2),mask)
-    Ztmp(1:n_mask) = pack(coords(:,:,:,3),mask)
-
-    select case(dim)
-    case(1)
-      call map_quad_ref_to_physical_1D( Xtmp(1:n_mask), &
-                                        Ytmp(1:n_mask), &
-                                        Ztmp(1:n_mask), &
-                                        ref_quads(1), quad )
-    case(2)
-      call map_quad_ref_to_physical_2D( reshape( Xtmp(1:n_mask), [n_quad, n_quad ] ), &
-                                        reshape( Ytmp(1:n_mask), [n_quad, n_quad ] ), &
-                                        reshape( Ztmp(1:n_mask), [n_quad, n_quad ] ), &
-                                        ref_quads(2), quad )
-    case(3)
-      call map_quad_ref_to_physical_3D( reshape( Xtmp(1:n_mask), [n_quad, n_quad, n_quad ] ), &
-                                        reshape( Ytmp(1:n_mask), [n_quad, n_quad, n_quad ] ), &
-                                        reshape( Ztmp(1:n_mask), [n_quad, n_quad, n_quad ] ), &
-                                        ref_quads(3), quad )
-    end select
-  end subroutine map_cell_quad_points
-
+  ! subroutine compute_quadrature_points( gblock1, gblock, n_skip, quad_order )
+  !   use quadrature_derived_type, only : create_quad_ref_1D,                    &
+  !                                       create_quad_ref_2D,                    &
+  !                                       create_quad_ref_3D
+  !   class(grid_block),     intent(in)    :: gblock1
+  !   class(grid_block),     intent(inout) :: gblock
+  !   integer, dimension(3), intent(in)    :: n_skip
+  !   integer,               intent(in)    :: quad_order
+  ! end subroutine compute_quadrature_points
 
   subroutine compute_quadrature_points( gblock1, gblock, n_skip, quad_order )
     use quadrature_derived_type, only : create_quad_ref_1D,                    &
                                         create_quad_ref_2D,                    &
-                                        create_quad_ref_3D
+                                        create_quad_ref_3D,                    &
+                                        map_quad_ref_to_physical
     class(grid_block),     intent(in)    :: gblock1
     class(grid_block),     intent(inout) :: gblock
     integer, dimension(3), intent(in)    :: n_skip
     integer,               intent(in)    :: quad_order
     type(quad_t), dimension(3) :: ref_quads
-    logical,  dimension(n_skip(1)+1,n_skip(1)+1,n_skip(1)+1)   :: mask1, mask2, mask
     real(dp), dimension(n_skip(1)+1,n_skip(1)+1,n_skip(1)+1,3) :: coords_tmp
     integer :: i, j, k
-    integer, dimension(3) :: idx, bnd_min, bnd_max, sz
+    integer :: status
+    integer, dimension(3) :: idx, bnd_min, bnd_max, sz, loc1, loc2
 
     sz = n_skip + 1
     
@@ -1752,22 +2013,20 @@ contains
     bnd_min = [ lbound(gblock1%node_coords,2), lbound(gblock1%node_coords,3), lbound(gblock1%node_coords,4) ]
     bnd_max = [ ubound(gblock1%node_coords,2), ubound(gblock1%node_coords,3), ubound(gblock1%node_coords,4) ]
     ! first the volume quads
-    mask = .false.
-    select case( gblock%n_dim )
-    case(1)
-      mask(:,1,1) = .true.
-    case(2)
-      mask(:,:,1) = .true.
-    case(3)
-      mask(:,:,:) = .true.
-    end select
+    loc1 = 2
+    loc1(gblock%n_dim+1:) = 0
     do k = 1,gblock%n_cells(3)
       do j = 1,gblock%n_cells(2)
         do i = 1,gblock%n_cells(1)
           idx = [i,j,k]
           coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
-          call map_cell_quad_points( gblock%n_dim, n_skip, quad_order, coords_tmp, mask, ref_quads, gblock%grid_vars%quad(i,j,k) )
-          gblock%grid_vars%volume = sum( gblock%grid_vars%quad(i,j,k)%quad_wts )
+          associate( X1 => coords_tmp(:,:,:,1), &
+                     X2 => coords_tmp(:,:,:,2), &
+                     X3 => coords_tmp(:,:,:,3), &
+                     gv => gblock%grid_vars )
+            call map_quad_ref_to_physical( X1, X2, X3, loc1, gv%interp, ref_quads(gblock%n_dim), gv%quad(i,j,k), status=status )
+            gv%volume = sum( gv%quad(i,j,k)%quad_wts )
+          end associate
         end do
       end do
     end do
@@ -1776,59 +2035,75 @@ contains
     ! now the face quads
 
     ! xi-faces
-    mask1 = .false.
-    mask2 = .false.
-    select case( gblock%n_dim )
-    case(2)
-      mask1(1,:,1) = .true.
-      mask2(sz(1),:,1) = .true.
-    case(3)
-      mask1(1,:,:) = .true.
-      mask2(sz(1),:,:) = .true.
-    end select
+    loc1 = 2
+    loc1(gblock%n_dim+1:) = 0
+    loc1(1) = 0
+
+    loc2 = 2
+    loc2(gblock%n_dim+1:) = 0
+    loc2(1) = 1
+
     do k = 1,gblock%n_cells(3)
       do j = 1,gblock%n_cells(2)
         do i = 1,1
           idx = [i,j,k]
           coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
-          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask1, ref_quads, gblock%grid_vars%xi_face_quad(i,j,k) )
-          gblock%grid_vars%xi_area = sum( gblock%grid_vars%xi_face_quad(i,j,k)%quad_wts )
+          associate( X1 => coords_tmp(:,:,:,1), &
+                     X2 => coords_tmp(:,:,:,2), &
+                     X3 => coords_tmp(:,:,:,3), &
+                     gv => gblock%grid_vars )
+            call map_quad_ref_to_physical( X1, X2, X3, loc1, gv%interp, ref_quads(gblock%n_dim-1), gv%xi_face_quad(i,j,k), status=status )
+            gv%xi_area = sum( gv%xi_face_quad(i,j,k)%quad_wts )
+          end associate
         end do
         do i = 1,gblock%n_cells(1)
           idx = [i,j,k]
           coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
-          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask2, ref_quads, gblock%grid_vars%xi_face_quad(i,j,k) )
-          gblock%grid_vars%xi_area = sum( gblock%grid_vars%xi_face_quad(i,j,k)%quad_wts )
+          associate( X1 => coords_tmp(:,:,:,1), &
+                     X2 => coords_tmp(:,:,:,2), &
+                     X3 => coords_tmp(:,:,:,3), &
+                     gv => gblock%grid_vars )
+            call map_quad_ref_to_physical( X1, X2, X3, loc2, gv%interp, ref_quads(gblock%n_dim-1), gv%xi_face_quad(i+1,j,k), status=status )
+            gv%xi_area = sum( gv%xi_face_quad(i,j,k)%quad_wts )
+          end associate
         end do
       end do
     end do
 
     ! eta-faces
-    mask1 = .false.
-    mask2 = .false.
-    select case( gblock%n_dim )
-    case(2)
-      mask1(:,1,1) = .true.
-      mask2(:,sz(2),1) = .true.
-    case(3)
-      mask1(:,1,:) = .true.
-      mask2(:,sz(2),:) = .true.
-    end select
+    loc1 = 2
+    loc1(gblock%n_dim+1:) = 0
+    loc1(2) = 0
+
+    loc2 = 2
+    loc2(gblock%n_dim+1:) = 0
+    loc2(2) = 1
+
     do k = 1,gblock%n_cells(3)
       do j = 1,1
         do i = 1,gblock%n_cells(1)
           idx = [i,j,k]
           coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
-          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask1, ref_quads, gblock%grid_vars%eta_face_quad(i,j,k) )
-          gblock%grid_vars%eta_area = sum( gblock%grid_vars%eta_face_quad(i,j,k)%quad_wts )
+          associate( X1 => coords_tmp(:,:,:,1), &
+                     X2 => coords_tmp(:,:,:,2), &
+                     X3 => coords_tmp(:,:,:,3), &
+                     gv => gblock%grid_vars )
+            call map_quad_ref_to_physical( X1, X2, X3, loc1, gv%interp, ref_quads(gblock%n_dim-1), gv%eta_face_quad(i,j,k), status=status )
+            gv%eta_area = sum( gv%eta_face_quad(i,j,k)%quad_wts )
+          end associate
         end do
       end do
       do j = 1,gblock%n_cells(2)
         do i = 1,gblock%n_cells(1)
           idx = [i,j,k]
           coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
-          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask2, ref_quads, gblock%grid_vars%eta_face_quad(i,j,k) )
-          gblock%grid_vars%eta_area = sum( gblock%grid_vars%eta_face_quad(i,j,k)%quad_wts )
+          associate( X1 => coords_tmp(:,:,:,1), &
+                     X2 => coords_tmp(:,:,:,2), &
+                     X3 => coords_tmp(:,:,:,3), &
+                     gv => gblock%grid_vars )
+            call map_quad_ref_to_physical( X1, X2, X3, loc2, gv%interp, ref_quads(gblock%n_dim-1), gv%eta_face_quad(i,j+1,k), status=status )
+            gv%eta_area = sum( gv%eta_face_quad(i,j,k)%quad_wts )
+          end associate
         end do
       end do
     end do
@@ -1836,15 +2111,24 @@ contains
     if ( gblock%n_dim == 2) return
 
     ! zeta-faces
-    mask1 = .false.; mask1(:,:,1) = .true.
-    mask2 = .false.; mask2(:,:,sz(3)) = .true.
+    loc1 = 2
+    loc1(3) = 0
+
+    loc2 = 2
+    loc2(3) = 1
+
     do k = 1,1
       do j = 1,gblock%n_cells(2)
         do i = 1,gblock%n_cells(1)
           idx = [i,j,k]
           coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
-          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask1, ref_quads, gblock%grid_vars%zeta_face_quad(i,j,k) )
-          gblock%grid_vars%zeta_area = sum( gblock%grid_vars%zeta_face_quad(i,j,k)%quad_wts )
+          associate( X1 => coords_tmp(:,:,:,1), &
+                     X2 => coords_tmp(:,:,:,2), &
+                     X3 => coords_tmp(:,:,:,3), &
+                     gv => gblock%grid_vars )
+            call map_quad_ref_to_physical( X1, X2, X3, loc1, gv%interp, ref_quads(gblock%n_dim-1), gv%zeta_face_quad(i,j,k), status=status )
+            gv%zeta_area = sum( gv%zeta_face_quad(i,j,k)%quad_wts )
+          end associate
         end do
       end do
     end do
@@ -1853,8 +2137,13 @@ contains
         do i = 1,gblock%n_cells(1)
           idx = [i,j,k]
           coords_tmp = cell_node_coords( idx, n_skip, bnd_min, bnd_max, gblock1%node_coords )
-          call map_cell_quad_points( gblock%n_dim-1, n_skip, quad_order, coords_tmp, mask2, ref_quads, gblock%grid_vars%zeta_face_quad(i,j,k) )
-          gblock%grid_vars%zeta_area = sum( gblock%grid_vars%zeta_face_quad(i,j,k)%quad_wts )
+          associate( X1 => coords_tmp(:,:,:,1), &
+                     X2 => coords_tmp(:,:,:,2), &
+                     X3 => coords_tmp(:,:,:,3), &
+                     gv => gblock%grid_vars )
+            call map_quad_ref_to_physical( X1, X2, X3, loc2, gv%interp, ref_quads(gblock%n_dim-1), gv%zeta_face_quad(i,j,k+1), status=status )
+            gv%zeta_area = sum( gv%zeta_face_quad(i,j,k)%quad_wts )
+          end associate
         end do
       end do
     end do
@@ -1889,6 +2178,7 @@ contains
 
   pure elemental subroutine deallocate_derived_grid( this )
     class(derived_grid_vars), intent(inout) :: this
+    call this%interp%destroy()
     call this%face_quads(1)%destroy()
     call this%face_quads(2)%destroy()
     call this%face_quads(3)%destroy()
@@ -2314,7 +2604,8 @@ contains
     allocate( this%D( term_end-term_start, term_start ) )
   end subroutine allocate_reconstruction_matrices
 
-  pure subroutine get_nbor_contribution( this, nbor, fquad, term_start, term_end, A, B, D, C )
+  subroutine get_nbor_contribution( this, nbor, fquad, term_start, term_end, A, B, D, C )
+    use debug, only : write_array
     use set_constants, only : zero, one
     class(var_rec_t), intent(in) :: this
     class(var_rec_t), intent(in) :: nbor
@@ -2338,6 +2629,9 @@ contains
       ! LHS
       d_basis_i = this%basis%scaled_basis_derivatives( term_start, term_end, fquad%quad_pts(:,q), dij )
       d_basis_j(:,1:term_end-term_start) = nbor%basis%scaled_basis_derivatives( term_start, term_end, fquad%quad_pts(:,q), dij )
+
+      call write_array( pack(d_basis_i,.true.), shape(d_basis_i), 'd_basis_i.txt')
+      call write_array( pack(d_basis_j,.true.), shape(d_basis_j), 'd_basis_j.txt')
       do m = 1,term_end-term_start
         do l = 1,term_end-term_start
           A(l,m) = A(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_i(:,m) )
@@ -2534,6 +2828,7 @@ contains
   end subroutine create_reconstruction_holder
 
   subroutine setup_reconstruction_holder( this, term_start, term_end, gblock, eval_fun )
+    use debug, only : write_array
     use set_constants,           only : zero
     use index_conversion,        only : get_face_idx_from_id
     use math,                    only : mat_inv
@@ -2552,6 +2847,13 @@ contains
     ! real(dp), dimension(term_end - term_start,            term_start, 2*gblock%n_dim) :: C
     integer, dimension(3) :: face_idx
     integer :: i, j, k, n, cnt, dir
+
+    logical :: debug
+    integer :: file_id
+    character(len=100) :: file_name
+
+    debug = .false.
+
     this%term_start = term_start
     this%term_end   = term_end
 
@@ -2569,6 +2871,13 @@ contains
             fquad => gblock%grid_vars%face_quads(dir)%p(face_idx(1),face_idx(2),face_idx(3))
             nbor  => this%rec( this%rec(cnt)%nbor_idx(n) )
             call this%rec(cnt)%get_nbor_contribution( nbor, fquad, term_start, term_end, dA, this%rec(cnt)%B(:,:,n), dD, this%rec(cnt)%C(:,:,n) )
+
+            if ( debug ) then 
+              file_id = 1
+              write(file_name,'(I0,A)') file_id, '_out.txt'
+              call write_array( pack(dA,.true.), shape(dA), trim(file_name) )
+              write(*,*) 'wrote to output file'
+            end if
             this%rec(cnt)%A = this%rec(cnt)%A + dA
             this%rec(cnt)%D = this%rec(cnt)%D + dD
           end do
@@ -2589,7 +2898,7 @@ contains
     type(grid_block),             intent(in)    :: gblock
     procedure(spatial_function), optional       :: eval_fun
     integer :: term_start, term_end
-    term_start = 2
+    term_start = 1
     term_end   = this%monomial_basis%n_terms
     if (present(eval_fun)) then
       call this%setup(term_start,term_end,gblock,eval_fun=eval_fun)
@@ -2686,8 +2995,8 @@ contains
 
     do n = 1,n_iter_
       call this%SOR_iteration(var_idx,omega_,res_tmp)
+      if (mod(n,100)==0) write(*,*) n, res_tmp
       res_tmp = res_tmp / res_init
-      write(*,*) n, res_tmp
       converged_ = all( res_tmp < tol)
       if ( present(residual ) ) residual(:,n) = res_tmp
       if ( present(converged) ) converged     = converged_
@@ -2731,20 +3040,15 @@ contains
     class(reconstruction_holder), intent(in)    :: this
     integer,  dimension(:),       intent(in)    :: var_idx
     real(dp), dimension(size(var_idx))          :: residual
-    integer :: i, vv, v, n_var
-
+    integer :: i
     residual = zero
-    n_var = size(var_idx)
     do i = 1,this%n_cells
-      do vv = 1,n_var
-        v = var_idx(vv)
-        residual = residual + sum( ( this%SOR_cell_residual(i,var_idx) )**2,dim=1 )
-      end do
+      residual = residual + sum( ( this%SOR_cell_residual(i,var_idx) )**2,dim=1 )
     end do
     residual = sqrt( residual )
   end function SOR_residual_norm
 
-  pure function SOR_cell_residual(this,cell_idx,var_idx) result(residual)
+  pure function SOR_cell_residual_old(this,cell_idx,var_idx) result(residual)
     use set_constants, only : zero, one
     class(reconstruction_holder), intent(in)    :: this
     integer,                      intent(in)    :: cell_idx
@@ -2758,13 +3062,34 @@ contains
     do vv = 1,n_var
       v = var_idx(vv)
       residual(:,vv) = residual(:,vv) + matmul( this%rec(cell_idx)%A, this%rec(cell_idx)%coefs(this%term_start+1:this%term_end,v) )
-      residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%D, this%rec(cell_idx)%coefs(1:this%term_start,v) )
+      residual(:,vv) = residual(:,vv) + matmul( this%rec(cell_idx)%D, this%rec(cell_idx)%coefs(1:this%term_start,v) )
       do n = 1,this%rec(cell_idx)%n_interior
         j = this%rec(cell_idx)%nbor_idx(n)
         residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%B(:,:,n), this%rec(j)%coefs(this%term_start+1:this%term_end,v) )
         residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%C(:,:,n), this%rec(j)%coefs(1:this%term_start,v) )
       end do
     end do
+  end function SOR_cell_residual_old
+
+  pure function SOR_cell_residual(this,cell_idx,var_idx) result(update)
+    use set_constants, only : zero, one
+    class(reconstruction_holder), intent(in)    :: this
+    integer,                      intent(in)    :: cell_idx
+    integer,  dimension(:),       intent(in)    :: var_idx
+    real(dp), dimension(this%term_end-this%term_start,size(var_idx)) :: update
+    integer :: n, j, vv, v, n_var
+
+    update = zero
+    n_var = size(var_idx)
+    do n = 1,this%rec(cell_idx)%n_interior
+      j = this%rec(cell_idx)%nbor_idx(n)
+      do vv = 1,n_var
+        v = var_idx(vv)
+        update(:,vv) = update(:,vv) + this%rec(cell_idx)%get_LHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
+        update(:,vv) = update(:,vv) + this%rec(cell_idx)%get_RHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
+      end do
+    end do
+
   end function SOR_cell_residual
 
 end module var_rec_holder_type
@@ -2796,23 +3121,20 @@ contains
     use grid_derived_type, only : grid_type
     use linspace_helper,   only : unit_cartesian_mesh_cat
     use var_rec_holder_type, only : reconstruction_holder
-    use lagrange_interpolation, only : generate_1D_barycentric_info, destroy_1D_barycentric_info
     integer,                     intent(in)  :: degree, n_vars, n_dim
     integer, dimension(3),       intent(in)  :: n_nodes, n_ghost
     type(grid_type),             intent(out) :: grid
     type(reconstruction_holder), intent(out) :: rec
     logical :: converged
     ! setup_reconstruction_holder( this, block_num, degree, n_vars, gblock )
-    call generate_1D_barycentric_info()
     call grid%setup(1)
     call grid%gblock(1)%setup(n_dim,n_nodes,n_ghost)
     grid%gblock(1)%node_coords = unit_cartesian_mesh_cat(n_nodes(1),n_nodes(2),n_nodes(3))
     call grid%gblock(1)%grid_vars%setup( grid%gblock(1) )
     call rec%create(1,degree,n_vars,grid%gblock(1))
     call rec%setup_basic(grid%gblock(1),eval_fun=test_function_1)
-    call rec%solve([1],omega=1.3_dp,tol=1e-10_dp,n_iter=100,converged=converged)
+    call rec%solve([1],omega=1.3_dp,tol=1e-10_dp,n_iter=10000,converged=converged)
     write(*,*) 'converged =', converged
-    call destroy_1D_barycentric_info()
   end subroutine setup_grid_and_reconstruction
 
 end module test_problem
