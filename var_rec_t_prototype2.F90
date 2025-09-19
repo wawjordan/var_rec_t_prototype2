@@ -2399,7 +2399,7 @@ pure elemental function compute_grid_moment(this,term,quad) result(moment)
   integer,                  intent(in) :: term
   type(quad_t),             intent(in) :: quad
   real(dp), dimension(quad%n_quad) :: tmp
-  real(dp), dimension(size(quad%quad_pts,1)) :: xtmp
+  real(dp), dimension(this%n_dim) :: xtmp
   real(dp) :: moment
   integer :: q, coef
     do q = 1,quad%n_quad
@@ -2418,7 +2418,7 @@ pure function evaluate_basis(this,term,point) result(B)
   integer :: coef
   B = one
   if (term == 1) return
-  call this%mono_basis%eval(term,point,B,coef)
+  call this%mono_basis%eval( term, this%transform(point), B, coef )
   B = B - this%moments(term)
 end function evaluate_basis
 
@@ -2439,7 +2439,7 @@ pure function evaluate_basis_derivative(this,term,point,order) result(dB)
   dB = zero
   if (term==1) return
 
-  call this%mono_basis%deval( term, point,order,dB,dcoef,coef)
+  call this%mono_basis%deval( term, this%transform(point), order, dB, dcoef, coef )
   dB = dB * dcoef / product( this%h_ref ** order )
 end function evaluate_basis_derivative
 
@@ -2516,18 +2516,15 @@ module var_rec_derived_type
     real(dp), dimension(:,:),   allocatable :: A_inv_D
     real(dp), dimension(:,:,:), allocatable :: A_inv_B
     real(dp), dimension(:,:,:), allocatable :: A_inv_C
+    real(dp), dimension(:,:),   allocatable :: A_inv_RHS
     real(dp), dimension(:,:),   allocatable :: A, D
     real(dp), dimension(:,:,:), allocatable :: B, C
   contains
     private
-    ! procedure, public, pass :: setup => setup_reconstruction
-    ! procedure, public, pass :: eval  => eval_reconstruction
     procedure, public, pass :: allocate_reconstruction_matrices
     procedure, public, pass :: get_nbor_contribution
-    ! procedure, pass :: get_LHS_interior
-    ! procedure, pass :: get_RHS_interior
-    procedure, public, pass :: get_RHS_contribution_update
-    procedure, public, pass :: get_LHS_contribution_update
+    procedure, public, pass :: get_self_RHS_contribution
+    procedure, public, pass :: get_nbor_RHS_contribution
     ! procedure, pass :: get_LHS_dirichlet
     ! procedure, pass :: get_RHS_dirichlet
     procedure, public, pass :: destroy => destroy_var_rec_t
@@ -2575,8 +2572,7 @@ contains
     if ( allocated(this%coefs  )  ) deallocate( this%coefs   )
     if ( allocated(this%A_inv  )  ) deallocate( this%A_inv   )
     if ( allocated(this%A_inv_B)  ) deallocate( this%A_inv_B )
-    if ( allocated(this%A_inv_C)  ) deallocate( this%A_inv_C )
-    if ( allocated(this%A_inv_D)  ) deallocate( this%A_inv_D )
+    if ( allocated(this%A_inv_RHS)  ) deallocate( this%A_inv_RHS     )
     if ( allocated(this%A      )  ) deallocate( this%A       )
     if ( allocated(this%B      )  ) deallocate( this%B       )
     if ( allocated(this%C      )  ) deallocate( this%C       )
@@ -2588,16 +2584,15 @@ contains
     integer,                                      intent(in)    :: term_start, term_end
     if ( allocated(this%A_inv  ) ) deallocate( this%A_inv   )
     if ( allocated(this%A_inv_B) ) deallocate( this%A_inv_B )
-    if ( allocated(this%A_inv_C) ) deallocate( this%A_inv_C )
-    if ( allocated(this%A_inv_D) ) deallocate( this%A_inv_D )
+    if ( allocated(this%A_inv_RHS    ) ) deallocate( this%A_inv_RHS     )
     if ( allocated(this%A      ) ) deallocate( this%A       )
     if ( allocated(this%B      ) ) deallocate( this%B       )
     if ( allocated(this%C      ) ) deallocate( this%C       )
     if ( allocated(this%D      ) ) deallocate( this%D       )
+    
     allocate( this%A_inv(   term_end-term_start,term_end-term_start ) )
     allocate( this%A_inv_B( term_end-term_start,term_end-term_start, this%n_interior ) )
-    allocate( this%A_inv_C( term_end-term_start, term_start, this%n_interior ) )
-    allocate( this%A_inv_D( term_end-term_start, term_start ) )
+    allocate( this%A_inv_RHS( term_end-term_start, this%n_vars ) )
     allocate( this%A(       term_end-term_start,term_end-term_start ) )
     allocate( this%B( term_end-term_start,term_end-term_start, this%n_interior ) )
     allocate( this%C( term_end-term_start, term_start, this%n_interior ) )
@@ -2613,142 +2608,113 @@ contains
     integer,          intent(in) :: term_start, term_end
     real(dp), dimension(term_end - term_start, term_end - term_start), intent(out) :: A, B
     real(dp), dimension(term_end - term_start, term_start),            intent(out) :: D, C
-    real(dp), dimension(term_end,term_end-term_start) :: d_basis_i
-    real(dp), dimension(term_end,max(term_end-term_start,term_start)) :: d_basis_j
+    real(dp), dimension(term_end,term_end) :: d_basis_i
+    real(dp), dimension(term_end,term_end) :: d_basis_j
     integer :: q, l, m
     real(dp), dimension(this%basis%n_dim) :: dij
     real(dp) :: xdij_mag
 
-    A = zero
-    B = zero
-    C = zero
-    D = zero
+    A = zero; B = zero; C = zero; D = zero
     dij = abs( this%basis%x_ref - nbor%basis%x_ref )
     xdij_mag = one/norm2(dij)
     do q = 1,fquad%n_quad
+      d_basis_i = this%basis%scaled_basis_derivatives( 0, term_end, fquad%quad_pts(:,q), dij )
+      d_basis_j = nbor%basis%scaled_basis_derivatives( 0, term_end, fquad%quad_pts(:,q), dij )
       ! LHS
-      d_basis_i = this%basis%scaled_basis_derivatives( term_start, term_end, fquad%quad_pts(:,q), dij )
-      d_basis_j(:,1:term_end-term_start) = nbor%basis%scaled_basis_derivatives( term_start, term_end, fquad%quad_pts(:,q), dij )
-
-      call write_array( pack(d_basis_i,.true.), shape(d_basis_i), 'd_basis_i.txt')
-      call write_array( pack(d_basis_j,.true.), shape(d_basis_j), 'd_basis_j.txt')
       do m = 1,term_end-term_start
         do l = 1,term_end-term_start
-          A(l,m) = A(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_i(:,m) )
-          B(l,m) = B(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_j(:,m) )
+          A(l,m) = A(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l+term_start), d_basis_i(:,m+term_start) )
+          B(l,m) = B(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l+term_start), d_basis_j(:,m+term_start) )
         end do
       end do
 
       ! RHS
-      d_basis_j = zero
-      d_basis_j(1:term_start,1:term_start) = nbor%basis%scaled_basis_derivatives( 0, term_start, fquad%quad_pts(:,q), dij )
       do m = 1,term_start
         do l = 1,term_end-term_start
-          D(l,m) = D(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_i(:,m) )
-          C(l,m) = C(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l), d_basis_j(:,m) )
+          D(l,m) = D(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l+term_start), d_basis_i(:,m) )
+          C(l,m) = C(l,m) + fquad%quad_wts(q) * xdij_mag * dot_product( d_basis_i(:,l+term_start), d_basis_j(:,m) )
         end do
       end do
     end do
   end subroutine get_nbor_contribution
 
-  pure function get_RHS_contribution_update( this, nbor, nbor_id, term_start, term_end, var_idx ) result(update)
+  pure function get_self_RHS_contribution( this, term_start, term_end, var_idx ) result(b)
+    use set_constants, only : zero, one
+    class(var_rec_t),    intent(in) :: this
+    integer,             intent(in) :: term_start, term_end
+    integer,             intent(in) :: var_idx
+    real(dp), dimension( term_end - term_start ) :: b
+    b = matmul( this%D, this%coefs(1:term_start,var_idx) )
+  end function get_self_RHS_contribution
+
+  pure function get_nbor_RHS_contribution( this, nbor, nbor_id, term_start, term_end, var_idx ) result(b)
     use set_constants, only : zero, one
     class(var_rec_t),    intent(in) :: this
     class(var_rec_t),    intent(in) :: nbor
     integer,             intent(in) :: nbor_id, term_start, term_end
     integer,             intent(in) :: var_idx
-    real(dp), dimension( term_end - term_start ) :: update
-    update = zero
-    update = update + matmul( this%A_inv_C(:,:,nbor_id), nbor%coefs(1:term_start,var_idx) )
-    update = update + matmul( this%A_inv_D, this%coefs(1:term_start,var_idx) )
-  end function get_RHS_contribution_update
+    real(dp), dimension( term_end - term_start ) :: b
+    b = matmul( this%C(:,:,nbor_id), nbor%coefs(1:term_start,var_idx) )
+  end function get_nbor_RHS_contribution
 
-  pure function get_LHS_contribution_update( this, nbor, nbor_id, term_start, term_end, var_idx ) result(update)
-    use set_constants, only : zero, one
-    class(var_rec_t),    intent(in) :: this
-    class(var_rec_t),    intent(in) :: nbor
-    integer,             intent(in) :: nbor_id, term_start, term_end
-    integer,             intent(in) :: var_idx
-    real(dp), dimension( term_end - term_start ) :: update
-    update = matmul( this%A_inv_B(:,:,nbor_id), nbor%coefs(term_start+1:term_end,var_idx) )
-  end function get_LHS_contribution_update
-
-  ! pure subroutine get_RHS_interior_update( this, nbors, term_start, term_end, var_idx, b )
+  ! subroutine get_LHS_dirichlet( this, fquad, term_start, term_end, A )
   !   use set_constants, only : zero, one
   !   class(var_rec_t),                             intent(in) :: this
-  !   class(var_rec_t), dimension(this%n_interior), intent(in) :: nbors
+  !   class(quad_t),                                intent(in) :: fquad
   !   integer,                                      intent(in) :: term_start, term_end
-  !   integer,          dimension(:),               intent(in) :: var_idx
-  !   real(dp), dimension( term_end - term_start,size(var_idx) ), intent(out) :: b
-  !   integer :: v, j
+  !   real(dp), dimension(term_end - term_start, term_end - term_start), intent(out) :: A
+  !   real(dp), dimension(term_end-term_start) :: basis
+  !   integer :: q, l, m
+  !   real(dp), dimension(this%basis%n_dim) :: dib, face_x_ref
+  !   real(dp) :: xdib_mag
 
-  !   b = zero
-  !   do v = 1,size(var_idx)
-  !     do j = 1,this%n_interior
-  !       b(:,v) = b(:,v) + matmul( this%A_inv_C(:,:,j), nbors(j)%coefs(term_start+1:term_end,var_idx(v)) )
+  !   A = zero
+  !   face_x_ref = fquad%integrate(this%basis%n_dim,fquad%quad_pts) / sum( fquad%quad_wts )
+
+  !   dib = abs( this%basis%x_ref - face_x_ref )
+  !   xdib_mag = one/norm2(dib)
+  !   do q = 1,fquad%n_quad
+  !     do m = 1,term_end-term_start
+  !       basis(m) = this%basis%scaled_basis_derivative(m,1,fquad%quad_pts(:,q),dib)
   !     end do
-  !     b(:,v) = b(:,v) + matmul( this%A_inv_D, this%coefs(term_start+1:term_end,var_idx(v)) )
+  !     do m = 1,term_end-term_start
+  !       do l = 1,term_end-term_start
+  !         A(l,m)   = A(l,m)   + fquad%quad_wts(q) * xdib_mag * basis(l) * basis(m)
+  !       end do
+  !     end do
   !   end do
-  ! end subroutine get_RHS_interior_update
 
-  subroutine get_LHS_dirichlet( this, fquad, term_start, term_end, A )
-    use set_constants, only : zero, one
-    class(var_rec_t),                             intent(in) :: this
-    class(quad_t),                                intent(in) :: fquad
-    integer,                                      intent(in) :: term_start, term_end
-    real(dp), dimension(term_end - term_start, term_end - term_start), intent(out) :: A
-    real(dp), dimension(term_end-term_start) :: basis
-    integer :: q, l, m
-    real(dp), dimension(this%basis%n_dim) :: dib, face_x_ref
-    real(dp) :: xdib_mag
+  ! end subroutine get_LHS_dirichlet
 
-    A = zero
-    face_x_ref = fquad%integrate(this%basis%n_dim,fquad%quad_pts) / sum( fquad%quad_wts )
+  ! pure subroutine get_RHS_dirichlet( this, fquad, term_start, term_end, var_idx, bc_eval, b )
+  !   use set_constants, only : zero, one
+  !   class(var_rec_t),                                         intent(in)  :: this
+  !   class(quad_t),                                            intent(in)  :: fquad
+  !   integer,                                                  intent(in)  :: term_start, term_end
+  !   integer,  dimension(:),                                   intent(in)  :: var_idx
+  !   real(dp), dimension(size(var_idx),fquad%n_quad),          intent(in)  :: bc_eval
+  !   real(dp), dimension(term_end - term_start,size(var_idx)), intent(out) :: b
+  !   real(dp), dimension(term_end-term_start) :: basis
+  !   integer :: v, q, l, m
+  !   real(dp), dimension(this%basis%n_dim) :: dib, face_x_ref
+  !   real(dp) :: xdib_mag
 
-    dib = abs( this%basis%x_ref - face_x_ref )
-    xdib_mag = one/norm2(dib)
-    do q = 1,fquad%n_quad
-      do m = 1,term_end-term_start
-        basis(m) = this%basis%scaled_basis_derivative(m,1,fquad%quad_pts(:,q),dib)
-      end do
-      do m = 1,term_end-term_start
-        do l = 1,term_end-term_start
-          A(l,m)   = A(l,m)   + fquad%quad_wts(q) * xdib_mag * basis(l) * basis(m)
-        end do
-      end do
-    end do
+  !   face_x_ref = fquad%integrate(this%basis%n_dim,fquad%quad_pts) / sum( fquad%quad_wts )
 
-  end subroutine get_LHS_dirichlet
+  !   dib = abs( this%basis%x_ref - face_x_ref )
+  !   xdib_mag = one/norm2(dib)
+  !   do q = 1,fquad%n_quad
+  !     do l = 1,term_end-term_start
+  !       basis(l) = this%basis%eval( l,fquad%quad_pts(:,q) )
+  !     end do
+  !     do v = 1,size(var_idx)
+  !       do l = 1,term_end-term_start
+  !         b(l,v) = b(l,v) + fquad%quad_wts(q) * xdib_mag * basis(l) * ( bc_eval(v,q) - this%coefs(1,var_idx(v)) )
+  !       end do
+  !     end do
+  !   end do
 
-  pure subroutine get_RHS_dirichlet( this, fquad, term_start, term_end, var_idx, bc_eval, b )
-    use set_constants, only : zero, one
-    class(var_rec_t),                                         intent(in)  :: this
-    class(quad_t),                                            intent(in)  :: fquad
-    integer,                                                  intent(in)  :: term_start, term_end
-    integer,  dimension(:),                                   intent(in)  :: var_idx
-    real(dp), dimension(size(var_idx),fquad%n_quad),          intent(in)  :: bc_eval
-    real(dp), dimension(term_end - term_start,size(var_idx)), intent(out) :: b
-    real(dp), dimension(term_end-term_start) :: basis
-    integer :: v, q, l, m
-    real(dp), dimension(this%basis%n_dim) :: dib, face_x_ref
-    real(dp) :: xdib_mag
-
-    face_x_ref = fquad%integrate(this%basis%n_dim,fquad%quad_pts) / sum( fquad%quad_wts )
-
-    dib = abs( this%basis%x_ref - face_x_ref )
-    xdib_mag = one/norm2(dib)
-    do q = 1,fquad%n_quad
-      do l = 1,term_end-term_start
-        basis(l) = this%basis%eval( l,fquad%quad_pts(:,q) )
-      end do
-      do v = 1,size(var_idx)
-        do l = 1,term_end-term_start
-          b(l,v) = b(l,v) + fquad%quad_wts(q) * xdib_mag * basis(l) * ( bc_eval(v,q) - this%coefs(1,var_idx(v)) )
-        end do
-      end do
-    end do
-
-  end subroutine get_RHS_dirichlet
+  ! end subroutine get_RHS_dirichlet
 
 end module var_rec_derived_type
 
@@ -2774,8 +2740,10 @@ module var_rec_holder_type
     procedure, public, pass :: setup_basic => setup_reconstruction_holder_basic
     procedure, public, pass :: destroy     => destroy_reconstruction_holder
     procedure, public, pass :: solve       => perform_iterative_reconstruction_SOR
-    procedure,         pass :: SOR_iteration, SOR_cell_residual, SOR_residual_norm
-    procedure,         pass :: set_cell_avgs
+    procedure,         pass :: SOR_iteration, SOR_residual_norm
+    procedure,         pass :: get_cell_RHS, set_A_inv_RHS
+    procedure,         pass :: get_cell_avg, set_cell_avgs
+    procedure,         pass :: get_block_update, get_SOR_update
   end type reconstruction_holder
 
   abstract interface
@@ -2824,7 +2792,6 @@ contains
         end do
       end do
     end do
-
   end subroutine create_reconstruction_holder
 
   subroutine setup_reconstruction_holder( this, term_start, term_end, gblock, eval_fun )
@@ -2843,22 +2810,12 @@ contains
     type(quad_t),    pointer :: fquad => null()
     real(dp), dimension(term_end - term_start, term_end - term_start )                :: dA
     real(dp), dimension(term_end - term_start,            term_start )                :: dD
-    ! real(dp), dimension(term_end - term_start, term_end - term_start, 2*gblock%n_dim) :: B
-    ! real(dp), dimension(term_end - term_start,            term_start, 2*gblock%n_dim) :: C
+    real(dp), dimension(term_end - term_start,maxval(this%rec%n_vars)) :: RHS
     integer, dimension(3) :: face_idx
     integer :: i, j, k, n, cnt, dir
 
-    logical :: debug
-    integer :: file_id
-    character(len=100) :: file_name
-
-    debug = .false.
-
     this%term_start = term_start
     this%term_end   = term_end
-
-    if (present(eval_fun)) call this%set_cell_avgs(gblock,eval_fun)
-
     cnt = 0
     do k = 1,gblock%n_cells(3)
       do j = 1,gblock%n_cells(2)
@@ -2871,25 +2828,20 @@ contains
             fquad => gblock%grid_vars%face_quads(dir)%p(face_idx(1),face_idx(2),face_idx(3))
             nbor  => this%rec( this%rec(cnt)%nbor_idx(n) )
             call this%rec(cnt)%get_nbor_contribution( nbor, fquad, term_start, term_end, dA, this%rec(cnt)%B(:,:,n), dD, this%rec(cnt)%C(:,:,n) )
-
-            if ( debug ) then 
-              file_id = 1
-              write(file_name,'(I0,A)') file_id, '_out.txt'
-              call write_array( pack(dA,.true.), shape(dA), trim(file_name) )
-              write(*,*) 'wrote to output file'
-            end if
             this%rec(cnt)%A = this%rec(cnt)%A + dA
             this%rec(cnt)%D = this%rec(cnt)%D + dD
           end do
           call mat_inv( this%rec(cnt)%A, this%rec(cnt)%A_inv, term_end - term_start )
-          this%rec(cnt)%A_inv_D = matmul(this%rec(cnt)%A_inv,this%rec(cnt)%D)
           do n = 1,this%rec(cnt)%n_interior
             this%rec(cnt)%A_inv_B(:,:,n) = matmul( this%rec(cnt)%A_inv, this%rec(cnt)%B(:,:,n) )
-            this%rec(cnt)%A_inv_C(:,:,n) = matmul( this%rec(cnt)%A_inv, this%rec(cnt)%C(:,:,n) )
           end do
         end do
       end do
     end do
+    if (present(eval_fun)) then
+      call this%set_cell_avgs(gblock,eval_fun)
+      call this%set_A_inv_RHS(gblock)
+    end if
   end subroutine setup_reconstruction_holder
 
   subroutine setup_reconstruction_holder_basic( this, gblock, eval_fun )
@@ -2920,40 +2872,71 @@ contains
     this%term_end   = 0
   end subroutine destroy_reconstruction_holder
 
-  subroutine set_cell_avgs(this,gblock,eval_fun)
+  pure function get_cell_RHS(this,cell_idx,var_idx) result(b)
+    use set_constants,           only : zero
+    use var_rec_derived_type,    only : var_rec_t
+    class(reconstruction_holder), target, intent(in) :: this
+    integer,                              intent(in) :: cell_idx
+    integer,                              intent(in) :: var_idx
+    real(dp), dimension(this%term_end-this%term_start) :: b
+    integer :: n, j
+    b = zero
+    do n = 1,this%rec(cell_idx)%n_interior
+      j = this%rec(cell_idx)%nbor_idx(n)
+      b = b + this%rec(cell_idx)%get_nbor_RHS_contribution( this%rec(j), n, this%term_start, this%term_end, var_idx )
+    end do
+    b = b - this%rec(cell_idx)%get_self_RHS_contribution( this%term_start, this%term_end, var_idx )
+  end function get_cell_RHS
+
+  pure function get_cell_avg(this,cell_idx,quad,eval_fun) result(avg)
+    use set_constants, only : zero
+    use quadrature_derived_type, only : quad_t
+    class(reconstruction_holder), intent(in) :: this
+    integer,                      intent(in) :: cell_idx
+    type(quad_t),                 intent(in) :: quad
+    procedure(spatial_function)              :: eval_fun
+    real(dp), dimension(this%rec(cell_idx)%n_vars) :: avg
+    real(dp), dimension(this%rec(cell_idx)%n_vars,quad%n_quad) :: tmp_val
+    integer :: n
+    tmp_val = zero
+    do n = 1,quad%n_quad
+      tmp_val(:,n) = eval_fun( this%rec(cell_idx)%n_vars, quad%quad_pts(:,n) )
+    end do
+    avg = quad%integrate( this%rec(cell_idx)%n_vars, tmp_val ) / sum( quad%quad_wts)
+  end function get_cell_avg
+
+  pure subroutine set_A_inv_RHS(this,gblock)
     use set_constants,           only : zero
     use grid_derived_type,       only : grid_block
+    use var_rec_derived_type,    only : var_rec_t
     class(reconstruction_holder), intent(inout) :: this
     type(grid_block),             intent(in)    :: gblock
-    procedure(spatial_function)                 :: eval_fun
-    real(dp), dimension(:,:), allocatable :: tmp_val
-    real(dp), dimension(3) :: pt
-    integer :: i, j, k, n, cnt, n_quad, n_var
-    n_quad = maxval( gblock%grid_vars%quad%n_quad )
-    n_var  = maxval( this%rec%n_vars )
-    allocate( tmp_val(n_var,n_quad) )
-
-    !  pure function integrate_vector( this, neq, f ) result( integral )
-    ! use set_precision, only : dp
-    ! class(quad_t),                        intent(in) :: this
-    ! integer,                              intent(in) :: neq
-    ! real(dp), dimension(neq,this%n_quad), intent(in) :: f
+    integer :: v,cnt,i,j,k
     cnt = 0
     do k = 1,gblock%n_cells(3)
       do j = 1,gblock%n_cells(2)
         do i = 1,gblock%n_cells(1)
-          associate( quad   => gblock%grid_vars%quad(i,j,k), &
-                     volume => gblock%grid_vars%volume(i,j,k) )
+          cnt = cnt + 1
+          do v = 1,this%rec(cnt)%n_vars
+            this%rec(cnt)%A_inv_RHS(:,v) = matmul( this%rec(cnt)%A_inv, this%get_cell_RHS(cnt,v) )
+          end do
+        end do
+      end do 
+    end do
+  end subroutine set_A_inv_RHS
+
+  subroutine set_cell_avgs(this,gblock,eval_fun)
+    use grid_derived_type,       only : grid_block
+    class(reconstruction_holder), intent(inout) :: this
+    type(grid_block),             intent(in)    :: gblock
+    procedure(spatial_function)                 :: eval_fun
+    integer :: i, j, k, cnt
+    cnt = 0
+    do k = 1,gblock%n_cells(3)
+      do j = 1,gblock%n_cells(2)
+        do i = 1,gblock%n_cells(1)
             cnt = cnt + 1
-            n_var  = this%rec(cnt)%n_vars
-            n_quad = quad%n_quad
-            tmp_val = zero
-            do n = 1,n_quad
-              pt = quad%quad_pts(:,n)
-              tmp_val(1:n_var,n) = eval_fun(n_var,pt)
-            end do
-            this%rec(cnt)%coefs(1,1:n_var) = quad%integrate(n_var,tmp_val(1:n_var,1:n_quad)) / volume
-          end associate
+            this%rec(cnt)%coefs(1,1:this%rec(cnt)%n_vars) = this%get_cell_avg(cnt,gblock%grid_vars%quad(i,j,k),eval_fun)
         end do
       end do
     end do
@@ -2985,7 +2968,8 @@ contains
       if (allocated(residual)) deallocate(residual)
       allocate(residual(n_var,n_iter_))
     end if
-    res_init = this%SOR_residual_norm(var_idx)
+    res_init = this%SOR_residual_norm(var_idx,omega_)
+    write(*,*) 0, res_init
 
     if (any(res_init < epsilon(one))) then
       converged_ = .true.
@@ -2995,12 +2979,14 @@ contains
 
     do n = 1,n_iter_
       call this%SOR_iteration(var_idx,omega_,res_tmp)
-      if (mod(n,100)==0) write(*,*) n, res_tmp
       res_tmp = res_tmp / res_init
-      converged_ = all( res_tmp < tol)
+      if (n==1 .or. mod(n,1)==0) write(*,*) n, res_tmp
+      converged_ = all( res_tmp < tol_)
       if ( present(residual ) ) residual(:,n) = res_tmp
       if ( present(converged) ) converged     = converged_
-      if ( converged_ ) return
+      if ( converged_ ) then
+        return
+      end if
     end do
   end subroutine perform_iterative_reconstruction_SOR
 
@@ -3011,44 +2997,41 @@ contains
     real(dp),                     intent(in)    :: omega
     ! real(dp), dimension(this%term_end-this%term_start,size(var_idx)), intent(out) :: residual
     real(dp), dimension(size(var_idx)), intent(out) :: residual
-    real(dp), dimension(this%term_end-this%term_start,size(var_idx)) :: update
+    real(dp), dimension(this%term_end-this%term_start) :: update
     integer :: i, n, j, vv, v, n_var
     
     residual = zero
     n_var = size(var_idx)
     do i = 1,this%n_cells
       update = zero
-      do n = 1,this%rec(i)%n_interior
-        j = this%rec(i)%nbor_idx(n)
-        do vv = 1,n_var
-          v = var_idx(vv)
-          update(:,vv) = update(:,vv) + this%rec(i)%get_LHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
-          update(:,vv) = update(:,vv) + this%rec(i)%get_RHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
-        end do
-      end do
       do vv = 1,n_var
         v = var_idx(vv)
-        this%rec(i)%coefs(this%term_start+1:this%term_end,v) = (one-omega)*this%rec(i)%coefs(this%term_start+1:this%term_end,v) + omega*update(:,vv)
-        residual = residual + sum( ( this%SOR_cell_residual(i,var_idx) )**2,dim=1 )
+        update = this%get_SOR_update(i,v,omega)
+        this%rec(i)%coefs(this%term_start+1:this%term_end,v) = this%rec(i)%coefs(this%term_start+1:this%term_end,v) + update
+        residual(vv) = residual(vv) + sum( update**2,dim=1 )
       end do
     end do
     residual = sqrt( residual )
   end subroutine SOR_iteration
 
-  pure function SOR_residual_norm(this,var_idx) result(residual)
+  pure function SOR_residual_norm(this,var_idx,omega) result(residual)
     use set_constants, only : zero
     class(reconstruction_holder), intent(in)    :: this
     integer,  dimension(:),       intent(in)    :: var_idx
+    real(dp),                     intent(in)    :: omega
     real(dp), dimension(size(var_idx))          :: residual
-    integer :: i
+    integer :: i, vv, v
     residual = zero
     do i = 1,this%n_cells
-      residual = residual + sum( ( this%SOR_cell_residual(i,var_idx) )**2,dim=1 )
+      do vv = 1,size(var_idx)
+        v = var_idx(vv)
+        residual(vv) = residual(vv) + sum( ( this%get_SOR_update(i,v,omega) )**2,dim=1 )
+      end do
     end do
     residual = sqrt( residual )
   end function SOR_residual_norm
 
-  pure function SOR_cell_residual_old(this,cell_idx,var_idx) result(residual)
+  pure function cell_residual(this,cell_idx,var_idx) result(residual)
     use set_constants, only : zero, one
     class(reconstruction_holder), intent(in)    :: this
     integer,                      intent(in)    :: cell_idx
@@ -3062,35 +3045,39 @@ contains
     do vv = 1,n_var
       v = var_idx(vv)
       residual(:,vv) = residual(:,vv) + matmul( this%rec(cell_idx)%A, this%rec(cell_idx)%coefs(this%term_start+1:this%term_end,v) )
-      residual(:,vv) = residual(:,vv) + matmul( this%rec(cell_idx)%D, this%rec(cell_idx)%coefs(1:this%term_start,v) )
+      residual(:,vv) = residual(:,vv) - this%get_cell_RHS(cell_idx,v)
       do n = 1,this%rec(cell_idx)%n_interior
         j = this%rec(cell_idx)%nbor_idx(n)
         residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%B(:,:,n), this%rec(j)%coefs(this%term_start+1:this%term_end,v) )
-        residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%C(:,:,n), this%rec(j)%coefs(1:this%term_start,v) )
       end do
     end do
-  end function SOR_cell_residual_old
+  end function cell_residual
 
-  pure function SOR_cell_residual(this,cell_idx,var_idx) result(update)
+  pure function get_block_update( this,cell_idx,var_idx ) result(update)
     use set_constants, only : zero, one
-    class(reconstruction_holder), intent(in)    :: this
-    integer,                      intent(in)    :: cell_idx
-    integer,  dimension(:),       intent(in)    :: var_idx
-    real(dp), dimension(this%term_end-this%term_start,size(var_idx)) :: update
-    integer :: n, j, vv, v, n_var
-
-    update = zero
-    n_var = size(var_idx)
+    class(reconstruction_holder), target, intent(in) :: this
+    integer,                              intent(in) :: cell_idx
+    integer,                              intent(in) :: var_idx
+    real(dp), dimension(this%term_end-this%term_start) :: update
+    integer :: n, j
+    update = zero 
     do n = 1,this%rec(cell_idx)%n_interior
       j = this%rec(cell_idx)%nbor_idx(n)
-      do vv = 1,n_var
-        v = var_idx(vv)
-        update(:,vv) = update(:,vv) + this%rec(cell_idx)%get_LHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
-        update(:,vv) = update(:,vv) + this%rec(cell_idx)%get_RHS_contribution_update(this%rec(j),n,this%term_start,this%term_end,var_idx(vv))
-      end do
+      update = update + matmul( this%rec(cell_idx)%A_inv_B(:,:,n), this%rec(j)%coefs(this%term_start+1:this%term_end,var_idx) )
     end do
+    update = update + this%rec(cell_idx)%A_inv_RHS(:,var_idx)
+    update = update - this%rec(cell_idx)%coefs(this%term_start+1:this%term_end,var_idx)
+  end function get_block_update
 
-  end function SOR_cell_residual
+  pure function get_SOR_update(this,cell_idx,var_idx,omega) result(update)
+    use set_constants, only : zero, one
+    class(reconstruction_holder), intent(in) :: this
+    integer,                      intent(in) :: cell_idx
+    integer,                      intent(in) :: var_idx
+    real(dp),                     intent(in) :: omega
+    real(dp), dimension(this%term_end-this%term_start) :: update
+    update = omega*this%get_block_update(cell_idx,var_idx)
+  end function get_SOR_update
 
 end module var_rec_holder_type
 
@@ -3126,13 +3113,12 @@ contains
     type(grid_type),             intent(out) :: grid
     type(reconstruction_holder), intent(out) :: rec
     logical :: converged
-    ! setup_reconstruction_holder( this, block_num, degree, n_vars, gblock )
     call grid%setup(1)
     call grid%gblock(1)%setup(n_dim,n_nodes,n_ghost)
     grid%gblock(1)%node_coords = unit_cartesian_mesh_cat(n_nodes(1),n_nodes(2),n_nodes(3))
     call grid%gblock(1)%grid_vars%setup( grid%gblock(1) )
     call rec%create(1,degree,n_vars,grid%gblock(1))
-    call rec%setup_basic(grid%gblock(1),eval_fun=test_function_1)
+    call rec%setup_basic(grid%gblock(1),eval_fun=test_function_2)
     call rec%solve([1],omega=1.3_dp,tol=1e-10_dp,n_iter=10000,converged=converged)
     write(*,*) 'converged =', converged
   end subroutine setup_grid_and_reconstruction
@@ -3159,8 +3145,8 @@ program main
 
   degree  = 3
   n_vars  = 1
-  n_dim   = 2
-  n_nodes = [5,5,2]
+  n_dim   = 3
+  n_nodes = [5,5,5]
   n_ghost = [0,0,0]
   call setup_grid_and_reconstruction(degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
 
