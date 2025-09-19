@@ -2521,6 +2521,7 @@ module var_rec_derived_type
     real(dp), dimension(:,:,:), allocatable :: B, C
   contains
     private
+    procedure, public, pass :: eval => evaluate_reconstruction
     procedure, public, pass :: allocate_reconstruction_matrices
     procedure, public, pass :: get_nbor_contribution
     procedure, public, pass :: get_self_RHS_contribution
@@ -2579,24 +2580,42 @@ contains
     if ( allocated(this%D      )  ) deallocate( this%D       )
   end subroutine destroy_var_rec_t
 
+  pure function evaluate_reconstruction(this,point,var_idx,n_terms) result(val)
+    use set_constants, only : zero
+    class(var_rec_t),       intent(in) :: this
+    real(dp), dimension(:), intent(in) :: point
+    integer,  dimension(:), intent(in) :: var_idx
+    integer,                intent(in) :: n_terms
+    real(dp), dimension(size(var_idx)) :: val
+    real(dp), dimension(n_terms) :: basis
+    integer :: v, n
+    val = zero
+    do n = 1,n_terms
+      basis(n) = this%basis%eval(n,point(1:this%basis%n_dim))
+    end do
+    do v = 1,size(var_idx)
+      val(v) = val(v) + dot_product( this%coefs(1:n_terms,var_idx(v)), basis )
+    end do
+  end function evaluate_reconstruction
+
   subroutine allocate_reconstruction_matrices( this, term_start, term_end )
     class(var_rec_t),                             intent(inout) :: this
     integer,                                      intent(in)    :: term_start, term_end
-    if ( allocated(this%A_inv  ) ) deallocate( this%A_inv   )
-    if ( allocated(this%A_inv_B) ) deallocate( this%A_inv_B )
-    if ( allocated(this%A_inv_RHS    ) ) deallocate( this%A_inv_RHS     )
-    if ( allocated(this%A      ) ) deallocate( this%A       )
-    if ( allocated(this%B      ) ) deallocate( this%B       )
-    if ( allocated(this%C      ) ) deallocate( this%C       )
-    if ( allocated(this%D      ) ) deallocate( this%D       )
+    if ( allocated(this%A_inv    ) ) deallocate( this%A_inv     )
+    if ( allocated(this%A_inv_B  ) ) deallocate( this%A_inv_B   )
+    if ( allocated(this%A_inv_RHS) ) deallocate( this%A_inv_RHS )
+    if ( allocated(this%A        ) ) deallocate( this%A         )
+    if ( allocated(this%B        ) ) deallocate( this%B         )
+    if ( allocated(this%C        ) ) deallocate( this%C         )
+    if ( allocated(this%D        ) ) deallocate( this%D         )
     
-    allocate( this%A_inv(   term_end-term_start,term_end-term_start ) )
-    allocate( this%A_inv_B( term_end-term_start,term_end-term_start, this%n_interior ) )
+    allocate( this%A_inv(     term_end-term_start,term_end-term_start ) )
+    allocate( this%A_inv_B(   term_end-term_start,term_end-term_start, this%n_interior ) )
     allocate( this%A_inv_RHS( term_end-term_start, this%n_vars ) )
-    allocate( this%A(       term_end-term_start,term_end-term_start ) )
-    allocate( this%B( term_end-term_start,term_end-term_start, this%n_interior ) )
-    allocate( this%C( term_end-term_start, term_start, this%n_interior ) )
-    allocate( this%D( term_end-term_start, term_start ) )
+    allocate( this%A(         term_end-term_start,term_end-term_start ) )
+    allocate( this%B(         term_end-term_start,term_end-term_start, this%n_interior ) )
+    allocate( this%C(         term_end-term_start,         term_start, this%n_interior ) )
+    allocate( this%D(         term_end-term_start,         term_start ) )
   end subroutine allocate_reconstruction_matrices
 
   subroutine get_nbor_contribution( this, nbor, fquad, term_start, term_end, A, B, D, C )
@@ -2746,6 +2765,7 @@ module var_rec_holder_type
     procedure,         pass :: SSOR_iteration_base, SSOR_iteration
     procedure,         pass :: get_cell_RHS, set_A_inv_RHS
     procedure,         pass :: get_cell_avg, set_cell_avgs
+    procedure,         pass :: get_cell_error
     procedure,         pass :: get_block_update, get_SOR_update
   end type reconstruction_holder
 
@@ -2844,7 +2864,7 @@ contains
     end do
     if (present(eval_fun)) then
       call this%set_cell_avgs(gblock,eval_fun)
-      call this%set_A_inv_RHS(gblock)
+      call this%set_A_inv_RHS()
     end if
   end subroutine setup_reconstruction_holder
 
@@ -2910,13 +2930,69 @@ contains
     avg = quad%integrate( this%rec(cell_idx)%n_vars, tmp_val ) / sum( quad%quad_wts)
   end function get_cell_avg
 
-  pure subroutine set_A_inv_RHS(this,gblock)
+  pure function get_cell_error(this,cell_idx,var_idx,n_terms,norm,quad,eval_fun) result(err)
+    use set_constants, only : zero, one
+    use quadrature_derived_type, only : quad_t
+    class(reconstruction_holder), intent(in) :: this
+    integer,                      intent(in) :: cell_idx
+    integer, dimension(:),        intent(in) :: var_idx
+    integer,                      intent(in) :: n_terms
+    integer,                      intent(in) :: norm
+    type(quad_t),                 intent(in) :: quad
+    procedure(spatial_function)              :: eval_fun
+    real(dp), dimension(size(var_idx)) :: err
+    real(dp), dimension(size(var_idx),quad%n_quad) :: tmp_val
+    real(dp), dimension(this%rec(cell_idx)%n_vars) :: exact
+    real(dp), dimension(size(var_idx)) :: reconstructed
+    integer :: n
+    tmp_val = zero
+    do n = 1,quad%n_quad
+      exact = eval_fun( this%rec(cell_idx)%n_vars, quad%quad_pts(:,n) )
+      reconstructed = this%rec(cell_idx)%eval( quad%quad_pts(:,n), var_idx, n_terms )
+      tmp_val(:,n) = abs( reconstructed - exact(var_idx) )
+    end do
+    err = quad%integrate( size(var_idx), tmp_val**norm )**(one/real(norm,dp)) / sum( quad%quad_wts)
+  end function get_cell_error
+
+  pure function get_error_norm(this,gblock,var_idx,n_terms,norms,eval_fun) result(err_norms)
+    use set_constants, only : zero
+    use grid_derived_type,       only : grid_block
+    use quadrature_derived_type, only : quad_t
+    class(reconstruction_holder), intent(in) :: this
+    type(grid_block),             intent(in) :: gblock
+    integer, dimension(:),        intent(in) :: var_idx
+    integer,                      intent(in) :: n_terms
+    integer, dimension(:),        intent(in) :: norms
+    procedure(spatial_function)              :: eval_fun
+    real(dp), dimension(size(var_idx),size(norms)) :: err_norms
+    type(quad_t), pointer :: quad
+    integer :: cnt, i, j, k, n
+    err_norms = zero
+
+    quad => null()
+
+    cnt = 0
+    do k = 1,this%n_cells_ijk(3)
+      do j = 1,this%n_cells_ijk(2)
+        do i = 1,this%n_cells_ijk(1)
+          cnt = cnt + 1
+          do n = 1,size(norms)
+            err_norms(:,n) = err_norms(:,n) + this%get_cell_error(i,var_idx,n_terms,norms(n),gblock%grid_vars%quad(i,j,k),eval_fun)
+          end do
+        end do
+      end do
+    end do
+
+    err_norms = err_norms / this%n_cells
+
+  end function get_error_norm
+
+  pure subroutine set_A_inv_RHS(this)
     use set_constants,           only : zero
     use grid_derived_type,       only : grid_block
     use var_rec_derived_type,    only : var_rec_t
     class(reconstruction_holder), intent(inout) :: this
-    type(grid_block),             intent(in)    :: gblock
-    integer :: v,cnt,i,j,k
+    integer :: v,cnt
     cnt = 0
     do cnt = 1,this%n_cells
       do v = 1,this%rec(cnt)%n_vars
