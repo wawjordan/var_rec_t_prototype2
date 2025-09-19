@@ -2729,6 +2729,7 @@ module var_rec_holder_type
   type :: reconstruction_holder
     private
     integer :: n_cells
+    integer, dimension(3) :: n_cells_ijk
     integer :: degree
     integer :: term_start, term_end
     type(var_rec_t), dimension(:), allocatable :: rec
@@ -2740,7 +2741,9 @@ module var_rec_holder_type
     procedure, public, pass :: setup_basic => setup_reconstruction_holder_basic
     procedure, public, pass :: destroy     => destroy_reconstruction_holder
     procedure, public, pass :: solve       => perform_iterative_reconstruction_SOR
+    procedure,         pass :: cell_residual, residual_norm
     procedure,         pass :: SOR_iteration, SOR_residual_norm
+    procedure,         pass :: SSOR_iteration_base, SSOR_iteration
     procedure,         pass :: get_cell_RHS, set_A_inv_RHS
     procedure,         pass :: get_cell_avg, set_cell_avgs
     procedure,         pass :: get_block_update, get_SOR_update
@@ -2774,6 +2777,7 @@ contains
     this%term_end       = 0
     this%monomial_basis = monomial_basis_t(this%degree,gblock%n_dim)
     this%n_cells = product( gblock%n_cells )
+    this%n_cells_ijk = gblock%n_cells
     lo = [1,1,1]        - gblock%n_ghost
     hi = gblock%n_nodes + gblock%n_ghost
     bnd_min = [1,1,1]
@@ -2867,6 +2871,7 @@ contains
     end if
     call this%monomial_basis%destroy()
     this%n_cells    = 0
+    this%n_cells_ijk = 0
     this%degree     = 0
     this%term_start = 0
     this%term_end   = 0
@@ -2913,15 +2918,10 @@ contains
     type(grid_block),             intent(in)    :: gblock
     integer :: v,cnt,i,j,k
     cnt = 0
-    do k = 1,gblock%n_cells(3)
-      do j = 1,gblock%n_cells(2)
-        do i = 1,gblock%n_cells(1)
-          cnt = cnt + 1
-          do v = 1,this%rec(cnt)%n_vars
-            this%rec(cnt)%A_inv_RHS(:,v) = matmul( this%rec(cnt)%A_inv, this%get_cell_RHS(cnt,v) )
-          end do
-        end do
-      end do 
+    do cnt = 1,this%n_cells
+      do v = 1,this%rec(cnt)%n_vars
+        this%rec(cnt)%A_inv_RHS(:,v) = matmul( this%rec(cnt)%A_inv, this%get_cell_RHS(cnt,v) )
+      end do
     end do
   end subroutine set_A_inv_RHS
 
@@ -2952,6 +2952,7 @@ contains
     real(dp), optional, dimension(:,:), allocatable, intent(out) :: residual
     real(dp) :: omega_, tol_
     real(dp), dimension(size(var_idx)) :: res_tmp, res_init
+    real(dp), dimension(size(var_idx)) :: res_tmp2, res_init2
     integer :: n, n_var, n_iter_
     logical :: converged_
 
@@ -2968,8 +2969,9 @@ contains
       if (allocated(residual)) deallocate(residual)
       allocate(residual(n_var,n_iter_))
     end if
-    res_init = this%SOR_residual_norm(var_idx,omega_)
-    write(*,*) 0, res_init
+    res_init  = this%SOR_residual_norm(var_idx,omega_)
+    res_init2 = this%residual_norm(var_idx)
+    write(*,*) 0, res_init, res_init2
 
     if (any(res_init < epsilon(one))) then
       converged_ = .true.
@@ -2979,8 +2981,11 @@ contains
 
     do n = 1,n_iter_
       call this%SOR_iteration(var_idx,omega_,res_tmp)
+      ! call this%SSOR_iteration_2(var_idx,omega_,res_tmp)
       res_tmp = res_tmp / res_init
-      if (n==1 .or. mod(n,1)==0) write(*,*) n, res_tmp
+      res_tmp2  = this%residual_norm(var_idx)
+      res_tmp2 = res_tmp2 / res_init2
+      if (n==1 .or. mod(n,1)==0) write(*,*) n, res_tmp, res_tmp2
       converged_ = all( res_tmp < tol_)
       if ( present(residual ) ) residual(:,n) = res_tmp
       if ( present(converged) ) converged     = converged_
@@ -2995,10 +3000,9 @@ contains
     class(reconstruction_holder), intent(inout) :: this
     integer,  dimension(:),       intent(in)    :: var_idx
     real(dp),                     intent(in)    :: omega
-    ! real(dp), dimension(this%term_end-this%term_start,size(var_idx)), intent(out) :: residual
     real(dp), dimension(size(var_idx)), intent(out) :: residual
     real(dp), dimension(this%term_end-this%term_start) :: update
-    integer :: i, n, j, vv, v, n_var
+    integer :: i, n, vv, v, n_var
     
     residual = zero
     n_var = size(var_idx)
@@ -3013,6 +3017,60 @@ contains
     end do
     residual = sqrt( residual )
   end subroutine SOR_iteration
+
+  subroutine SSOR_iteration(this,var_idx,omega,residual)
+    use set_constants, only : zero, one
+    class(reconstruction_holder), intent(inout) :: this
+    integer,  dimension(:),       intent(in)    :: var_idx
+    real(dp),                     intent(in)    :: omega
+    real(dp), dimension(size(var_idx)), intent(out) :: residual
+    real(dp), dimension(size(var_idx)) :: residual_tmp
+    integer, dimension(3) :: lo, hi, stride
+    integer :: d, s
+    
+    residual = zero
+
+    do d = 1,3
+      do s = 1,-1,-2
+        stride = 1
+        stride(d) = s
+        lo = merge(1,this%n_cells_ijk,stride==1)
+        hi = merge(this%n_cells_ijk,1,stride==1)
+        call this%SSOR_iteration_base(lo,hi,stride,var_idx,omega,residual_tmp)
+        residual = residual + residual_tmp
+      end do
+    end do
+    residual = sqrt( residual )
+
+  end subroutine SSOR_iteration
+
+  subroutine SSOR_iteration_base(this, lo, hi, stride, var_idx, omega, residual_tmp )
+    use set_constants, only : zero, one
+    use index_conversion, only : local2global
+    class(reconstruction_holder), intent(inout) :: this
+    integer,  dimension(3),       intent(in)    :: lo, hi, stride
+    integer,  dimension(:),       intent(in)    :: var_idx
+    real(dp),                     intent(in)    :: omega
+    real(dp), dimension(size(var_idx)), intent(out) :: residual_tmp
+    real(dp), dimension(this%term_end-this%term_start) :: update
+    integer :: cell_idx, i, j, k, n, vv, v, n_var
+    residual_tmp = zero
+    n_var = size(var_idx)
+    do k = lo(3),hi(3),stride(3)
+      do j = lo(2),hi(2),stride(2)
+        do i = lo(1),hi(1),stride(1)
+          cell_idx = local2global([i,j,k],this%n_cells_ijk)
+          update = zero
+          do vv = 1,n_var
+            v = var_idx(vv)
+            update = this%get_SOR_update(cell_idx,v,omega)
+            this%rec(cell_idx)%coefs(this%term_start+1:this%term_end,v) = this%rec(cell_idx)%coefs(this%term_start+1:this%term_end,v) + update
+            residual_tmp(vv) = residual_tmp(vv) + sum( update**2,dim=1 )
+          end do
+        end do
+      end do
+    end do
+  end subroutine SSOR_iteration_base
 
   pure function SOR_residual_norm(this,var_idx,omega) result(residual)
     use set_constants, only : zero
@@ -3035,23 +3093,35 @@ contains
     use set_constants, only : zero, one
     class(reconstruction_holder), intent(in)    :: this
     integer,                      intent(in)    :: cell_idx
-    integer,  dimension(:),       intent(in)    :: var_idx
-    real(dp), dimension(this%term_end-this%term_start,size(var_idx)) :: residual
-    integer :: n, j, vv, v, n_var
+    integer,                      intent(in)    :: var_idx
+    real(dp), dimension(this%term_end-this%term_start) :: residual
+    integer :: n, j
 
     residual = zero
 
-    n_var = size(var_idx)
-    do vv = 1,n_var
-      v = var_idx(vv)
-      residual(:,vv) = residual(:,vv) + matmul( this%rec(cell_idx)%A, this%rec(cell_idx)%coefs(this%term_start+1:this%term_end,v) )
-      residual(:,vv) = residual(:,vv) - this%get_cell_RHS(cell_idx,v)
-      do n = 1,this%rec(cell_idx)%n_interior
-        j = this%rec(cell_idx)%nbor_idx(n)
-        residual(:,vv) = residual(:,vv) - matmul( this%rec(cell_idx)%B(:,:,n), this%rec(j)%coefs(this%term_start+1:this%term_end,v) )
-      end do
+    residual = residual + matmul( this%rec(cell_idx)%A, this%rec(cell_idx)%coefs(this%term_start+1:this%term_end,var_idx) )
+    residual = residual - this%get_cell_RHS(cell_idx,var_idx)
+    do n = 1,this%rec(cell_idx)%n_interior
+      j = this%rec(cell_idx)%nbor_idx(n)
+      residual = residual - matmul( this%rec(cell_idx)%B(:,:,n), this%rec(j)%coefs(this%term_start+1:this%term_end,var_idx) )
     end do
   end function cell_residual
+
+  pure function residual_norm(this,var_idx) result(residual)
+    use set_constants, only : zero
+    class(reconstruction_holder), intent(in)    :: this
+    integer,  dimension(:),       intent(in)    :: var_idx
+    real(dp), dimension(size(var_idx))          :: residual
+    integer :: i, vv, v
+    residual = zero
+    do i = 1,this%n_cells
+      do vv = 1,size(var_idx)
+        v = var_idx(vv)
+        residual(vv) = residual(vv) + sum( ( this%cell_residual(i,v) )**2,dim=1 )
+      end do
+    end do
+    residual = sqrt( residual )
+  end function residual_norm
 
   pure function get_block_update( this,cell_idx,var_idx ) result(update)
     use set_constants, only : zero, one
@@ -3101,7 +3171,8 @@ contains
     integer,                intent(in) :: n_var
     real(dp), dimension(:), intent(in) :: x
     real(dp), dimension(n_var)         :: val
-    val(1) = sin(pi*x(1)) * sin(pi*x(2)) * sin(pi*x(3))
+    ! val(1) = sin(pi*x(1)) * sin(pi*x(2)) * sin(pi*x(3))
+    val(1) = sin(pi*x(1)) * sin(pi*x(2))
   end function test_function_2
 
   subroutine setup_grid_and_reconstruction( degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
@@ -3119,6 +3190,8 @@ contains
     call grid%gblock(1)%grid_vars%setup( grid%gblock(1) )
     call rec%create(1,degree,n_vars,grid%gblock(1))
     call rec%setup_basic(grid%gblock(1),eval_fun=test_function_2)
+    write(*,*) storage_size(rec)
+    write(*,*) storage_size(grid)
     call rec%solve([1],omega=1.3_dp,tol=1e-10_dp,n_iter=10000,converged=converged)
     write(*,*) 'converged =', converged
   end subroutine setup_grid_and_reconstruction
@@ -3143,10 +3216,10 @@ program main
   integer :: i, j, N, N_repeat
   real(dp) :: avg
 
-  degree  = 3
+  degree  = 5
   n_vars  = 1
-  n_dim   = 3
-  n_nodes = [5,5,5]
+  n_dim   = 2
+  n_nodes = [11,11,2]
   n_ghost = [0,0,0]
   call setup_grid_and_reconstruction(degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
 
