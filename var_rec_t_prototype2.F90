@@ -2745,12 +2745,13 @@ module var_rec_holder_type
   implicit none
   private
   public :: reconstruction_holder
+  public :: spatial_function
   type :: reconstruction_holder
     private
-    integer :: n_cells
-    integer, dimension(3) :: n_cells_ijk
-    integer :: degree
-    integer :: term_start, term_end
+    integer, public :: n_cells
+    integer, public, dimension(3) :: n_cells_ijk
+    integer, public :: degree
+    integer, public :: term_start, term_end
     type(var_rec_t), dimension(:), allocatable :: rec
     type(monomial_basis_t) :: monomial_basis
   contains
@@ -2766,6 +2767,7 @@ module var_rec_holder_type
     procedure,         pass :: get_cell_RHS, set_A_inv_RHS
     procedure,         pass :: get_cell_avg, set_cell_avgs
     procedure,         pass :: get_cell_error
+    procedure, public, pass :: get_error_norm
     procedure,         pass :: get_block_update, get_SOR_update
   end type reconstruction_holder
 
@@ -2783,8 +2785,8 @@ contains
     use grid_derived_type, only : grid_block, pack_cell_node_coords
     use index_conversion,  only : cell_face_nbors
     class(reconstruction_holder), intent(inout) :: this
-    integer,                     intent(in)    :: block_num, degree, n_vars
-    type(grid_block),            intent(in)    :: gblock
+    integer,                     intent(in)     :: block_num, degree, n_vars
+    type(grid_block),            intent(in)     :: gblock
     real(dp), dimension(gblock%n_dim) :: h_ref
     real(dp), dimension(3,8) :: nodes
     integer, dimension(3) :: lo, hi, bnd_min, bnd_max
@@ -2798,8 +2800,8 @@ contains
     this%monomial_basis = monomial_basis_t(this%degree,gblock%n_dim)
     this%n_cells = product( gblock%n_cells )
     this%n_cells_ijk = gblock%n_cells
-    lo = [1,1,1]        - gblock%n_ghost
-    hi = gblock%n_nodes + gblock%n_ghost
+    lo = [1,1,1]
+    hi = gblock%n_nodes
     bnd_min = [1,1,1]
     bnd_max = gblock%n_cells
     allocate( this%rec( this%n_cells ) )
@@ -2944,6 +2946,7 @@ contains
     real(dp), dimension(size(var_idx),quad%n_quad) :: tmp_val
     real(dp), dimension(this%rec(cell_idx)%n_vars) :: exact
     real(dp), dimension(size(var_idx)) :: reconstructed
+    integer, parameter :: max_L_norm = 10
     integer :: n
     tmp_val = zero
     do n = 1,quad%n_quad
@@ -2951,7 +2954,13 @@ contains
       reconstructed = this%rec(cell_idx)%eval( quad%quad_pts(:,n), var_idx, n_terms )
       tmp_val(:,n) = abs( reconstructed - exact(var_idx) )
     end do
-    err = quad%integrate( size(var_idx), tmp_val**norm )**(one/real(norm,dp)) / sum( quad%quad_wts)
+    if (norm>max_L_norm) then
+      err = maxval(tmp_val,dim=2)
+    else
+      err = quad%integrate( size(var_idx), tmp_val**norm )**(one/real(norm,dp))
+      err = err / sum( quad%quad_wts)**(one/real(norm,dp))
+    end if
+    
   end function get_cell_error
 
   pure function get_error_norm(this,gblock,var_idx,n_terms,norms,eval_fun) result(err_norms)
@@ -2965,26 +2974,32 @@ contains
     integer, dimension(:),        intent(in) :: norms
     procedure(spatial_function)              :: eval_fun
     real(dp), dimension(size(var_idx),size(norms)) :: err_norms
-    type(quad_t), pointer :: quad
+    integer, parameter :: max_L_norm = 10
     integer :: cnt, i, j, k, n
     err_norms = zero
-
-    quad => null()
-
     cnt = 0
-    do k = 1,this%n_cells_ijk(3)
-      do j = 1,this%n_cells_ijk(2)
-        do i = 1,this%n_cells_ijk(1)
-          cnt = cnt + 1
-          do n = 1,size(norms)
-            err_norms(:,n) = err_norms(:,n) + this%get_cell_error(i,var_idx,n_terms,norms(n),gblock%grid_vars%quad(i,j,k),eval_fun)
+    do n = 1,size(norms)
+      if (norms(n)>max_L_norm) then
+        do k = 1,this%n_cells_ijk(3)
+          do j = 1,this%n_cells_ijk(2)
+            do i = 1,this%n_cells_ijk(1)
+              cnt = cnt + 1
+              err_norms(:,n) = max( err_norms(:,n), this%get_cell_error(i,var_idx,n_terms,norms(n),gblock%grid_vars%quad(i,j,k),eval_fun) )
+            end do
           end do
         end do
-      end do
+      else
+        do k = 1,this%n_cells_ijk(3)
+          do j = 1,this%n_cells_ijk(2)
+            do i = 1,this%n_cells_ijk(1)
+              cnt = cnt + 1
+              err_norms(:,n) = err_norms(:,n) + this%get_cell_error(i,var_idx,n_terms,norms(n),gblock%grid_vars%quad(i,j,k),eval_fun)
+            end do
+          end do
+        end do
+        err_norms(:,n) = err_norms(:,n) / this%n_cells
+      end if
     end do
-
-    err_norms = err_norms / this%n_cells
-
   end function get_error_norm
 
   pure subroutine set_A_inv_RHS(this)
@@ -3247,29 +3262,33 @@ contains
     integer,                intent(in) :: n_var
     real(dp), dimension(:), intent(in) :: x
     real(dp), dimension(n_var)         :: val
-    ! val(1) = sin(pi*x(1)) * sin(pi*x(2)) * sin(pi*x(3))
-    val(1) = sin(pi*x(1)) * sin(pi*x(2))
+    val(1) = sin(pi*x(1)) * sin(pi*x(2)) * sin(pi*x(3))
+    ! val(1) = sin(pi*x(1)) * sin(pi*x(2))
   end function test_function_2
 
   subroutine setup_grid_and_reconstruction( degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
     use grid_derived_type, only : grid_type
     use linspace_helper,   only : unit_cartesian_mesh_cat
-    use var_rec_holder_type, only : reconstruction_holder
+    use var_rec_holder_type, only : reconstruction_holder, spatial_function
     integer,                     intent(in)  :: degree, n_vars, n_dim
     integer, dimension(3),       intent(in)  :: n_nodes, n_ghost
     type(grid_type),             intent(out) :: grid
     type(reconstruction_holder), intent(out) :: rec
     logical :: converged
+    procedure(spatial_function), pointer :: eval_fun => null()
+
+    eval_fun => test_function_1
     call grid%setup(1)
     call grid%gblock(1)%setup(n_dim,n_nodes,n_ghost)
     grid%gblock(1)%node_coords = unit_cartesian_mesh_cat(n_nodes(1),n_nodes(2),n_nodes(3))
     call grid%gblock(1)%grid_vars%setup( grid%gblock(1) )
     call rec%create(1,degree,n_vars,grid%gblock(1))
-    call rec%setup_basic(grid%gblock(1),eval_fun=test_function_2)
+    call rec%setup_basic(grid%gblock(1),eval_fun=eval_fun)
     write(*,*) storage_size(rec)
     write(*,*) storage_size(grid)
-    call rec%solve([1],omega=1.3_dp,tol=1e-10_dp,n_iter=10000,converged=converged)
+    call rec%solve([1],omega=1.3_dp,tol=1e-16_dp,n_iter=10000,converged=converged)
     write(*,*) 'converged =', converged
+    write(*,*) 'Error: ', rec%get_error_norm(grid%gblock(1),[1],rec%term_end,[1,2,huge(1)],eval_fun)
   end subroutine setup_grid_and_reconstruction
 
 end module test_problem
@@ -3292,11 +3311,11 @@ program main
   integer :: i, j, N, N_repeat
   real(dp) :: avg
 
-  degree  = 5
+  degree  = 1
   n_vars  = 1
-  n_dim   = 2
-  n_nodes = [11,11,2]
-  n_ghost = [0,0,0]
+  n_dim   = 3
+  n_nodes = [11,11,11]
+  n_ghost = [2,2,2]
   call setup_grid_and_reconstruction(degree, n_vars, n_dim, n_nodes, n_ghost, grid, rec )
 
   write(*,*) 'Here'
